@@ -30,6 +30,9 @@ diskimage:
 	$(CAD) CREATEVOLUME $(VOLNAME).po $(VOLNAME) 143KB
 	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) $(IMG)/PRODOS/PRODOS#FF0000
 	
+sprites:
+	python3 tools/convert_sprites.py
+
 clean:
 	rm -f $(PGM)
 	rm -f $(PGM).o
