@@ -48,50 +48,10 @@ main:
 	.byte $cc
 	.addr fileClose
 
-	; Open the graphics file
-	jsr PRODOS
-	.byte $c8
-	.addr fileOpenGfx
-	bne ioError
-
-	; Load graphics at $a102
-	jsr PRODOS
-	.byte $ca
-	.addr fileReadGfx
-	bne ioError
-
-	; Close the file
-	jsr PRODOS
-	.byte $cc
-	.addr fileClose
-
-	; We have another page of graphics that has to load on top of ProDOS, so load it in HGR2 first
-	jsr PRODOS
-	.byte $c8
-	.addr fileOpenGfxHi
-	bne ioError
-
-	; Load high graphics at $5000 temporarily
-	jsr PRODOS
-	.byte $ca
-	.addr fileReadGfxHi
-	bne ioError
-
-	; Close the file
-	jsr PRODOS
-	.byte $cc
-	.addr fileClose
-
-	; We're done with ProDOS for good now, so we can stomp on it with the last page of graphics
-	; that Choplifter expects to find there
-	ldx #$00
-
-copyBytesLoop:
-	lda	$5000,x
-	sta	$bef0,x
-	inx
-	cpx #$70
-	bne copyBytesLoop
+	; Story 3: CHOPGFX and CHOPGFXHI loads are skipped.
+	; The DHGR rendering subsystem (CHOP1) now extends past $A102 and CHOPGFX would
+	; clobber rendering code at $A102+. Story 3 uses only blitAlignedImage stubs —
+	; no sprite pixel data is accessed. CHOPGFX will be restored/relocated in Story 4+.
 
 	jmp initVectors
 
@@ -176,7 +136,7 @@ fileRead1:
 	.byte 4
 	.byte 1					; File handle (we know it's gonna be 1)
 	.addr $6000
-	.word $4100				; Covers all code up to bottom of graphics area ($A0FF)
+	.word $5000				; Read full HICODE segment — DHGR rendering subsystem may exceed $A0FF
 fileRead1Len:
 	.word 0					; Result (bytes read)
 

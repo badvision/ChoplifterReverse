@@ -1,4 +1,5 @@
 .include "zeropage.s"
+.setcpu "65c02"         ; Apple IIe uses 65C02 — enables stz and other 65C02 instructions
 
 .macro UNUSED byteCount
 	.repeat byteCount
@@ -1433,56 +1434,100 @@ blitRect:		; $1224
         sbc     ZP_CURR_X_BYTE
         sta     ZP_IMAGE_W
 
-blitRectLoop:  						; Blit the pixels
+blitRectLoop:  						; Blit the pixels — DHGR dual-bank write
 		ldx     ZP_RENDER_CURR_Y
-        lda     hiResRowsLow,x
-        sta     blitRectBlit+1	; Self-modifying code
+        lda     dhgrRowLo,x             ; DHGR row table (was hiResRowsLow)
+        sta     blitRectBlit+1          ; patch aux write lo
         sta     blitRectBlit2+1
+        sta     blitRectMain+1          ; patch main write lo
+        sta     blitRectMain2+1
 
-        lda     hiResRowsHigh,x
+        lda     dhgrRowHi,x             ; DHGR row table (was hiResRowsHigh)
         eor     ZP_PAGEMASK
-        sta     blitRectBlit+2	; Self-modifying code
+        sta     blitRectBlit+2          ; patch aux write hi
         sta     blitRectBlit2+2
+        sta     blitRectMain+2          ; patch main write hi
+        sta     blitRectMain2+2
+
         lda     #$01
         and     ZP_RENDER_CURR_Y
         asl
         tay
         lda     (ZP_PARAM_PTR_L),y
-        sta     blitRectLoad2+1
+        and     #$7F                    ; enforce DHGR bit-7 = 0
+        sta     blitRectLoad2+1         ; patch aux even-pixel value
+        sta     blitRectMain2Load+1     ; patch main even-pixel value
         iny
         lda     (ZP_PARAM_PTR_L),y
-        sta     blitRectLoad+1	; Self-modifying code
+        and     #$7F                    ; enforce DHGR bit-7 = 0
+        sta     blitRectLoad+1          ; patch aux odd-pixel value
+        sta     blitRectMainLoad+1      ; patch main odd-pixel value
+
         ldx     ZP_IMAGE_W
         ldy     ZP_CURR_X_BYTE
+        sty     ZP_FILL_BYTE            ; save starting column for main pass
         tya
         and     #$01
+        sei                             ; disable IRQ: RAMWRAUX routes stack/ZP writes to AUX
+        sta     $C005                   ; RAMWRAUX — write aux bank
         beq     blitRectLoad2
 
-blitRectLoad:			; $1274
+blitRectLoad:			; aux odd-pixel inner loop
 		lda		#$55		; Self-modification target
-blitRectBlit:			; $1276
+blitRectBlit:			; aux write
 		sta		$2ad0,y		; Self-modification target
 
         iny
         dex
-        beq     blitRectRowDone
+        beq     blitRectAuxDone
 
-blitRectLoad2:			; $127d
+blitRectLoad2:			; aux even-pixel inner loop
 		lda		#$2a		; Self-modification target
-blitRectBlit2:			; $127f
+blitRectBlit2:			;
 		sta		$2ad0,y		; Self-modification target
 
 		iny
         dex
         bne     blitRectLoad
 
+blitRectAuxDone:
+		; Aux pass complete — now write same row to main bank
+        sta     $C004                   ; RAMWRMAIN — restore before any IRQ can fire
+        cli                             ; re-enable interrupts
+        ldx     ZP_IMAGE_W
+        ldy     ZP_FILL_BYTE            ; restore starting column
+        tya
+        and     #$01
+        beq     blitRectMain2
+
+blitRectMainLoad:		; main odd-pixel inner loop
+		lda		#$55		; Self-modification target
+blitRectMain:			; main write
+		sta		$2ad0,y		; Self-modification target
+
+        iny
+        dex
+        beq     blitRectRowDone
+
+blitRectMain2Load:		; main even-pixel inner loop
+		lda		#$2a		; Self-modification target
+blitRectMain2:			;
+		sta		$2ad0,y		; Self-modification target
+
+		iny
+        dex
+        bne     blitRectMainLoad
+
 blitRectRowDone:
 		dec     ZP_IMAGE_H
+        beq     blitRectDone
+        lda     ZP_RENDER_CURR_Y    ; bounds check: stop at row 0 to avoid table overrun
         beq     blitRectDone
         dec     ZP_RENDER_CURR_Y
         jmp     blitRectLoop
 
 blitRectDone:
+		sta     $C004                   ; RAMWRMAIN — ensure clean exit before rts
 		lda     ZP_REGISTER_A		; Restore registers
         ldx     ZP_REGISTER_X
         ldy     ZP_REGISTER_Y
@@ -1507,20 +1552,64 @@ initRendering:		; $1296
         lda     #$C0
         sta     ZP_SCREENTOP			; Vertical scrolling no longer supported, so this is fixed at 192
 
-        ; Clear both DHGR pages to black at boot
-        LDA     #$00
-        JSR     screenFill              ; clear page 1 (ZP_PAGEMASK already $00)
+        ; Clear ALL of $2000-$5FFF in both AUX and MAIN at boot.
+        ; screenFill only clears the 192 DHGR row addresses (7680 bytes), leaving
+        ; 512 "hole" bytes that the HGR interleave never touches.  ProDOS writes
+        ; its 80-col text copyright banner to AUX $2000-$3FFF before the game
+        ; starts; those bytes land partly in the holes and survive a screenFill.
+        ; This brute-force page-by-page wipe eliminates that artifact once at boot.
+        ;
+        ; Clears AUX $2000-$5FFF, then MAIN $2000-$5FFF (64 pages of 256 bytes).
+        ; Uses ZP_DHGR_ROW_L/H as a page pointer (safe: initRendering zeroed them above).
 
-        LDA     #$60
-        STA     ZP_PAGEMASK
         LDA     #$00
-        JSR     screenFill              ; clear page 2
+        TAY                             ; Y = inner byte counter, also fill value
+        STA     ZP_DHGR_ROW_L           ; pointer lo always $00 (page-aligned)
+        LDA     #$20
+        STA     ZP_DHGR_ROW_H           ; pointer hi = $20 (start at $2000)
+
+        ; --- AUX pass ---
+        ; IMPORTANT: Must switch back to RAMWRMAIN before any ZP read-modify-write
+        ; (INC ZP_DHGR_ROW_H) to avoid writing the incremented value to AUX ZP.
+        ; Also disable interrupts: RAMWRAUX routes stack writes to AUX bank; an
+        ; interrupt between STA $C005 and STA $C004 would push PC/flags to AUX
+        ; stack and corrupt the return path.
+        SEI
+@vramClearAux:
+        LDA     ZP_DHGR_ROW_H
+        CMP     #$60                    ; stop after $5FFF (hi goes $20..$5F)
+        BEQ     @vramClearAuxDone
+        STA     $C005                   ; RAMWRAUX — switch to aux writes
+        LDA     #$00
+@vramClearAuxInner:
+        STA     (ZP_DHGR_ROW_L),Y
+        INY
+        BNE     @vramClearAuxInner      ; inner loop: 256 bytes per page
+        STA     $C004                   ; RAMWRMAIN — restore before INC
+        INC     ZP_DHGR_ROW_H
+        JMP     @vramClearAux
+@vramClearAuxDone:
+
+        ; --- MAIN pass ---
+        STA     $C004                   ; RAMWRMAIN (ensure clean state)
+        LDA     #$20
+        STA     ZP_DHGR_ROW_H           ; reset pointer to $2000
+@vramClearMain:
+        LDA     ZP_DHGR_ROW_H
+        CMP     #$60
+        BEQ     @vramClearMainDone
+        LDA     #$00
+@vramClearMainInner:
+        STA     (ZP_DHGR_ROW_L),Y
+        INY
+        BNE     @vramClearMainInner
+        INC     ZP_DHGR_ROW_H
+        JMP     @vramClearMain
+@vramClearMainDone:
+        CLI                             ; re-enable interrupts (disabled for RAMWRAUX safety)
 
         LDA     #$00
-        STA     ZP_PAGEMASK             ; restore page 1
-
-        ; Draw 12-stripe test pattern to confirm dual-bank writes work
-        JSR     stripeTest
+        STA     ZP_PAGEMASK             ; ensure page 1 selected
 
         pla
         rts
@@ -8709,7 +8798,7 @@ dhgrRowHi:
     .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
 
 ; Remaining slack (511 - 384 = 127 bytes)
-
+        .res    127,$00             ; pad to $9000
 
 .org $9000		; Rendering-focused jump table
 jumpRenderMoon:				jmp     renderMoon				; $9000
@@ -9317,274 +9406,670 @@ renderMoon:			; $9411
         bpl     renderMoonBuffer0
         jmp     renderMoonBuffer1
 renderMoonBuffer0:
-		lda     #$F0
+        lda     #$70
+        sta     $C005               ; RAMWRAUX
         sta     $20C8
-        lda     #$8B
+        sta     $C004               ; RAMWRMAIN
+        stz     $20C8
+        lda     #$0B
+        sta     $C005               ; RAMWRAUX
         sta     $20C9
-        lda     #$AE
+        sta     $C004               ; RAMWRMAIN
+        stz     $20C9
+        lda     #$2E
+        sta     $C005               ; RAMWRAUX
         sta     $24C8
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $24C8
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $24C9
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $24C9
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $28C8
-        lda     #$AB
+        sta     $C004               ; RAMWRMAIN
+        stz     $28C8
+        lda     #$2B
+        sta     $C005               ; RAMWRAUX
         sta     $28C9
-        lda     #$81
+        sta     $C004               ; RAMWRMAIN
+        stz     $28C9
+        lda     #$01
+        sta     $C005               ; RAMWRAUX
         sta     $28CA
-        lda     #$C0
+        sta     $C004               ; RAMWRMAIN
+        stz     $28CA
+        lda     #$40
+        sta     $C005               ; RAMWRAUX
         sta     $2CC7
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $2CC7
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $2CC8
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $2CC8
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $2CC9
-        lda     #$82
+        sta     $C004               ; RAMWRMAIN
+        stz     $2CC9
+        lda     #$02
+        sta     $C005               ; RAMWRAUX
         sta     $2CCA
-        lda     #$E0
+        sta     $C004               ; RAMWRMAIN
+        stz     $2CCA
+        lda     #$60
+        sta     $C005               ; RAMWRAUX
         sta     $30C7
-        lda     #$DD
+        sta     $C004               ; RAMWRMAIN
+        stz     $30C7
+        lda     #$5D
+        sta     $C005               ; RAMWRAUX
         sta     $30C8
-        lda     #$EA
+        sta     $C004               ; RAMWRMAIN
+        stz     $30C8
+        lda     #$6A
+        sta     $C005               ; RAMWRAUX
         sta     $30C9
-        lda     #$85
+        sta     $C004               ; RAMWRMAIN
+        stz     $30C9
+        lda     #$05
+        sta     $C005               ; RAMWRAUX
         sta     $30CA
-        lda     #$D0
+        sta     $C004               ; RAMWRMAIN
+        stz     $30CA
+        lda     #$50
+        sta     $C005               ; RAMWRAUX
         sta     $34C7
-        lda     #$AE
+        sta     $C004               ; RAMWRMAIN
+        stz     $34C7
+        lda     #$2E
+        sta     $C005               ; RAMWRAUX
         sta     $34C8
-        lda     #$DD
+        sta     $C004               ; RAMWRMAIN
+        stz     $34C8
+        lda     #$5D
+        sta     $C005               ; RAMWRAUX
         sta     $34C9
-        lda     #$8B
+        sta     $C004               ; RAMWRMAIN
+        stz     $34C9
+        lda     #$0B
+        sta     $C005               ; RAMWRAUX
         sta     $34CA
-        lda     #$B0
+        sta     $C004               ; RAMWRMAIN
+        stz     $34CA
+        lda     #$30
+        sta     $C005               ; RAMWRAUX
         sta     $38C7
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $38C7
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $38C8
-        lda     #$B6
+        sta     $C004               ; RAMWRMAIN
+        stz     $38C8
+        lda     #$36
+        sta     $C005               ; RAMWRAUX
         sta     $38C9
-        lda     #$8D
+        sta     $C004               ; RAMWRMAIN
+        stz     $38C9
+        lda     #$0D
+        sta     $C005               ; RAMWRAUX
         sta     $38CA
-        lda     #$D8
+        sta     $C004               ; RAMWRMAIN
+        stz     $38CA
+        lda     #$58
+        sta     $C005               ; RAMWRAUX
         sta     $3CC7
-        lda     #$FF
+        sta     $C004               ; RAMWRMAIN
+        stz     $3CC7
+        lda     #$7F
+        sta     $C005               ; RAMWRAUX
         sta     $3CC8
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $3CC8
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $3CC9
-        lda     #$9B
+        sta     $C004               ; RAMWRMAIN
+        stz     $3CC9
+        lda     #$1B
+        sta     $C005               ; RAMWRAUX
         sta     $3CCA
-        lda     #$B8
+        sta     $C004               ; RAMWRMAIN
+        stz     $3CCA
+        lda     #$38
+        sta     $C005               ; RAMWRAUX
         sta     $2147
-        lda     #$D9
+        sta     $C004               ; RAMWRMAIN
+        stz     $2147
+        lda     #$59
+        sta     $C005               ; RAMWRAUX
         sta     $2148
-        lda     #$BA
+        sta     $C004               ; RAMWRMAIN
+        stz     $2148
+        lda     #$3A
+        sta     $C005               ; RAMWRAUX
         sta     $2149
-        lda     #$95
+        sta     $C004               ; RAMWRMAIN
+        stz     $2149
+        lda     #$15
+        sta     $C005               ; RAMWRAUX
         sta     $214A
-        lda     #$D8
+        sta     $C004               ; RAMWRMAIN
+        stz     $214A
+        lda     #$58
+        sta     $C005               ; RAMWRAUX
         sta     $2547
-        lda     #$BA
+        sta     $C004               ; RAMWRMAIN
+        stz     $2547
+        lda     #$3A
+        sta     $C005               ; RAMWRAUX
         sta     $2548
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $2548
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $2549
-        lda     #$9A
+        sta     $C004               ; RAMWRMAIN
+        stz     $2549
+        lda     #$1A
+        sta     $C005               ; RAMWRAUX
         sta     $254A
-        lda     #$B8
+        sta     $C004               ; RAMWRMAIN
+        stz     $254A
+        lda     #$38
+        sta     $C005               ; RAMWRAUX
         sta     $2947
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $2947
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $2948
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $2948
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $2949
-        lda     #$97
+        sta     $C004               ; RAMWRMAIN
+        stz     $2949
+        lda     #$17
+        sta     $C005               ; RAMWRAUX
         sta     $294A
-        lda     #$D8
+        sta     $C004               ; RAMWRMAIN
+        stz     $294A
+        lda     #$58
+        sta     $C005               ; RAMWRAUX
         sta     $2D47
-        lda     #$AE
+        sta     $C004               ; RAMWRMAIN
+        stz     $2D47
+        lda     #$2E
+        sta     $C005               ; RAMWRAUX
         sta     $2D48
-        lda     #$F5
+        sta     $C004               ; RAMWRMAIN
+        stz     $2D48
+        lda     #$75
+        sta     $C005               ; RAMWRAUX
         sta     $2D49
-        lda     #$9A
+        sta     $C004               ; RAMWRMAIN
+        stz     $2D49
+        lda     #$1A
+        sta     $C005               ; RAMWRAUX
         sta     $2D4A
-        lda     #$B0
+        sta     $C004               ; RAMWRMAIN
+        stz     $2D4A
+        lda     #$30
+        sta     $C005               ; RAMWRAUX
         sta     $3147
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $3147
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $3148
-        lda     #$FE
+        sta     $C004               ; RAMWRMAIN
+        stz     $3148
+        lda     #$7E
+        sta     $C005               ; RAMWRAUX
         sta     $3149
-        lda     #$8D
+        sta     $C004               ; RAMWRMAIN
+        stz     $3149
+        lda     #$0D
+        sta     $C005               ; RAMWRAUX
         sta     $314A
+        sta     $C004               ; RAMWRMAIN
+        stz     $314A
 renderMoonChunkBuffer0:
-        lda     #$F0
+        lda     #$70
+        sta     $C005               ; RAMWRAUX
         sta     $3547
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $3547
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $3548
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $3548
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $3549
-        lda     #$8B
+        sta     $C004               ; RAMWRMAIN
+        stz     $3549
+        lda     #$0B
+        sta     $C005               ; RAMWRAUX
         sta     $354A
-        lda     #$A0
+        sta     $C004               ; RAMWRMAIN
+        stz     $354A
+        lda     #$20
+        sta     $C005               ; RAMWRAUX
         sta     $3947
-        lda     #$DD
+        sta     $C004               ; RAMWRMAIN
+        stz     $3947
+        lda     #$5D
+        sta     $C005               ; RAMWRAUX
         sta     $3948
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $3948
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $3949
-        lda     #$85
+        sta     $C004               ; RAMWRMAIN
+        stz     $3949
+        lda     #$05
+        sta     $C005               ; RAMWRAUX
         sta     $394A
-        lda     #$C0
+        sta     $C004               ; RAMWRMAIN
+        stz     $394A
+        lda     #$40
+        sta     $C005               ; RAMWRAUX
         sta     $3D47
-        lda     #$BA
+        sta     $C004               ; RAMWRMAIN
+        stz     $3D47
+        lda     #$3A
+        sta     $C005               ; RAMWRAUX
         sta     $3D48
-        lda     #$CF
+        sta     $C004               ; RAMWRMAIN
+        stz     $3D48
+        lda     #$4F
+        sta     $C005               ; RAMWRAUX
         sta     $3D49
-        lda     #$82
+        sta     $C004               ; RAMWRMAIN
+        stz     $3D49
+        lda     #$02
+        sta     $C005               ; RAMWRAUX
         sta     $3D4A
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $3D4A
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $21C8
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $21C8
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $21C9
-        lda     #$81
+        sta     $C004               ; RAMWRMAIN
+        stz     $21C9
+        lda     #$01
+        sta     $C005               ; RAMWRAUX
         sta     $21CA
-        lda     #$AE
+        sta     $C004               ; RAMWRMAIN
+        stz     $21CA
+        lda     #$2E
+        sta     $C005               ; RAMWRAUX
         sta     $25C8
-        lda     #$DD
+        sta     $C004               ; RAMWRMAIN
+        stz     $25C8
+        lda     #$5D
+        sta     $C005               ; RAMWRAUX
         sta     $25C9
-        lda     #$F0
+        sta     $C004               ; RAMWRMAIN
+        stz     $25C9
+        lda     #$70
+        sta     $C005               ; RAMWRAUX
         sta     $29C8
-        lda     #$8B
+        sta     $C004               ; RAMWRMAIN
+        stz     $29C8
+        lda     #$0B
+        sta     $C005               ; RAMWRAUX
         sta     $29C9
+        sta     $C004               ; RAMWRMAIN
+        stz     $29C9
         rts
 renderMoonBuffer1:		; $9563
-		lda     #$F0
+        lda     #$70
+        sta     $C005               ; RAMWRAUX
         sta     $40C8
-        lda     #$8B
+        sta     $C004               ; RAMWRMAIN
+        stz     $40C8
+        lda     #$0B
+        sta     $C005               ; RAMWRAUX
         sta     $40C9
-        lda     #$AE
+        sta     $C004               ; RAMWRMAIN
+        stz     $40C9
+        lda     #$2E
+        sta     $C005               ; RAMWRAUX
         sta     $44C8
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $44C8
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $44C9
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $44C9
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $48C8
-        lda     #$AB
+        sta     $C004               ; RAMWRMAIN
+        stz     $48C8
+        lda     #$2B
+        sta     $C005               ; RAMWRAUX
         sta     $48C9
-        lda     #$81
+        sta     $C004               ; RAMWRMAIN
+        stz     $48C9
+        lda     #$01
+        sta     $C005               ; RAMWRAUX
         sta     $48CA
-        lda     #$C0
+        sta     $C004               ; RAMWRMAIN
+        stz     $48CA
+        lda     #$40
+        sta     $C005               ; RAMWRAUX
         sta     $4CC7
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $4CC7
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $4CC8
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $4CC8
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $4CC9
-        lda     #$82
+        sta     $C004               ; RAMWRMAIN
+        stz     $4CC9
+        lda     #$02
+        sta     $C005               ; RAMWRAUX
         sta     $4CCA
-        lda     #$E0
+        sta     $C004               ; RAMWRMAIN
+        stz     $4CCA
+        lda     #$60
+        sta     $C005               ; RAMWRAUX
         sta     $50C7
-        lda     #$DD
+        sta     $C004               ; RAMWRMAIN
+        stz     $50C7
+        lda     #$5D
+        sta     $C005               ; RAMWRAUX
         sta     $50C8
-        lda     #$EA
+        sta     $C004               ; RAMWRMAIN
+        stz     $50C8
+        lda     #$6A
+        sta     $C005               ; RAMWRAUX
         sta     $50C9
-        lda     #$85
+        sta     $C004               ; RAMWRMAIN
+        stz     $50C9
+        lda     #$05
+        sta     $C005               ; RAMWRAUX
         sta     $50CA
-        lda     #$D0
+        sta     $C004               ; RAMWRMAIN
+        stz     $50CA
+        lda     #$50
+        sta     $C005               ; RAMWRAUX
         sta     $54C7
-        lda     #$AE
+        sta     $C004               ; RAMWRMAIN
+        stz     $54C7
+        lda     #$2E
+        sta     $C005               ; RAMWRAUX
         sta     $54C8
-        lda     #$DD
+        sta     $C004               ; RAMWRMAIN
+        stz     $54C8
+        lda     #$5D
+        sta     $C005               ; RAMWRAUX
         sta     $54C9
-        lda     #$8B
+        sta     $C004               ; RAMWRMAIN
+        stz     $54C9
+        lda     #$0B
+        sta     $C005               ; RAMWRAUX
         sta     $54CA
-        lda     #$B0
+        sta     $C004               ; RAMWRMAIN
+        stz     $54CA
+        lda     #$30
+        sta     $C005               ; RAMWRAUX
         sta     $58C7
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $58C7
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $58C8
-        lda     #$B6
+        sta     $C004               ; RAMWRMAIN
+        stz     $58C8
+        lda     #$36
+        sta     $C005               ; RAMWRAUX
         sta     $58C9
-        lda     #$8D
+        sta     $C004               ; RAMWRMAIN
+        stz     $58C9
+        lda     #$0D
+        sta     $C005               ; RAMWRAUX
         sta     $58CA
-        lda     #$D8
+        sta     $C004               ; RAMWRMAIN
+        stz     $58CA
+        lda     #$58
+        sta     $C005               ; RAMWRAUX
         sta     $5CC7
-        lda     #$FF
+        sta     $C004               ; RAMWRMAIN
+        stz     $5CC7
+        lda     #$7F
+        sta     $C005               ; RAMWRAUX
         sta     $5CC8
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $5CC8
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $5CC9
-        lda     #$9B
+        sta     $C004               ; RAMWRMAIN
+        stz     $5CC9
+        lda     #$1B
+        sta     $C005               ; RAMWRAUX
         sta     $5CCA
-        lda     #$B8
+        sta     $C004               ; RAMWRMAIN
+        stz     $5CCA
+        lda     #$38
+        sta     $C005               ; RAMWRAUX
         sta     $4147
-        lda     #$D9
+        sta     $C004               ; RAMWRMAIN
+        stz     $4147
+        lda     #$59
+        sta     $C005               ; RAMWRAUX
         sta     $4148
-        lda     #$BA
+        sta     $C004               ; RAMWRMAIN
+        stz     $4148
+        lda     #$3A
+        sta     $C005               ; RAMWRAUX
         sta     $4149
-        lda     #$95
+        sta     $C004               ; RAMWRMAIN
+        stz     $4149
+        lda     #$15
+        sta     $C005               ; RAMWRAUX
         sta     $414A
-        lda     #$D8
+        sta     $C004               ; RAMWRMAIN
+        stz     $414A
+        lda     #$58
+        sta     $C005               ; RAMWRAUX
         sta     $4547
-        lda     #$BA
+        sta     $C004               ; RAMWRMAIN
+        stz     $4547
+        lda     #$3A
+        sta     $C005               ; RAMWRAUX
         sta     $4548
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $4548
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $4549
-        lda     #$9A
+        sta     $C004               ; RAMWRMAIN
+        stz     $4549
+        lda     #$1A
+        sta     $C005               ; RAMWRAUX
         sta     $454A
-        lda     #$B8
+        sta     $C004               ; RAMWRMAIN
+        stz     $454A
+        lda     #$38
+        sta     $C005               ; RAMWRAUX
         sta     $4947
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $4947
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $4948
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $4948
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $4949
-        lda     #$97
+        sta     $C004               ; RAMWRMAIN
+        stz     $4949
+        lda     #$17
+        sta     $C005               ; RAMWRAUX
         sta     $494A
-        lda     #$D8
+        sta     $C004               ; RAMWRMAIN
+        stz     $494A
+        lda     #$58
+        sta     $C005               ; RAMWRAUX
         sta     $4D47
-        lda     #$AE
+        sta     $C004               ; RAMWRMAIN
+        stz     $4D47
+        lda     #$2E
+        sta     $C005               ; RAMWRAUX
         sta     $4D48
-        lda     #$F5
+        sta     $C004               ; RAMWRMAIN
+        stz     $4D48
+        lda     #$75
+        sta     $C005               ; RAMWRAUX
         sta     $4D49
-        lda     #$9A
+        sta     $C004               ; RAMWRMAIN
+        stz     $4D49
+        lda     #$1A
+        sta     $C005               ; RAMWRAUX
         sta     $4D4A
-        lda     #$B0
+        sta     $C004               ; RAMWRMAIN
+        stz     $4D4A
+        lda     #$30
+        sta     $C005               ; RAMWRAUX
         sta     $5147
-        lda     #$D5
+        sta     $C004               ; RAMWRMAIN
+        stz     $5147
+        lda     #$55
+        sta     $C005               ; RAMWRAUX
         sta     $5148
-        lda     #$FE
+        sta     $C004               ; RAMWRMAIN
+        stz     $5148
+        lda     #$7E
+        sta     $C005               ; RAMWRAUX
         sta     $5149
-        lda     #$8D
+        sta     $C004               ; RAMWRMAIN
+        stz     $5149
+        lda     #$0D
+        sta     $C005               ; RAMWRAUX
         sta     $514A
+        sta     $C004               ; RAMWRMAIN
+        stz     $514A
 renderMoonChunkBuffer1:
-        lda     #$F0
+        lda     #$70
+        sta     $C005               ; RAMWRAUX
         sta     $5547
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $5547
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $5548
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $5548
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $5549
-        lda     #$8B
+        sta     $C004               ; RAMWRMAIN
+        stz     $5549
+        lda     #$0B
+        sta     $C005               ; RAMWRAUX
         sta     $554A
-        lda     #$A0
+        sta     $C004               ; RAMWRMAIN
+        stz     $554A
+        lda     #$20
+        sta     $C005               ; RAMWRAUX
         sta     $5947
-        lda     #$DD
+        sta     $C004               ; RAMWRMAIN
+        stz     $5947
+        lda     #$5D
+        sta     $C005               ; RAMWRAUX
         sta     $5948
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $5948
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $5949
-        lda     #$85
+        sta     $C004               ; RAMWRMAIN
+        stz     $5949
+        lda     #$05
+        sta     $C005               ; RAMWRAUX
         sta     $594A
-        lda     #$C0
+        sta     $C004               ; RAMWRMAIN
+        stz     $594A
+        lda     #$40
+        sta     $C005               ; RAMWRAUX
         sta     $5D47
-        lda     #$BA
+        sta     $C004               ; RAMWRMAIN
+        stz     $5D47
+        lda     #$3A
+        sta     $C005               ; RAMWRAUX
         sta     $5D48
-        lda     #$CF
+        sta     $C004               ; RAMWRMAIN
+        stz     $5D48
+        lda     #$4F
+        sta     $C005               ; RAMWRAUX
         sta     $5D49
-        lda     #$82
+        sta     $C004               ; RAMWRMAIN
+        stz     $5D49
+        lda     #$02
+        sta     $C005               ; RAMWRAUX
         sta     $5D4A
-        lda     #$D7
+        sta     $C004               ; RAMWRMAIN
+        stz     $5D4A
+        lda     #$57
+        sta     $C005               ; RAMWRAUX
         sta     $41C8
-        lda     #$AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $41C8
+        lda     #$2A
+        sta     $C005               ; RAMWRAUX
         sta     $41C9
-        lda     #$81
+        sta     $C004               ; RAMWRMAIN
+        stz     $41C9
+        lda     #$01
+        sta     $C005               ; RAMWRAUX
         sta     $41CA
-        lda     #$AE
+        sta     $C004               ; RAMWRMAIN
+        stz     $41CA
+        lda     #$2E
+        sta     $C005               ; RAMWRAUX
         sta     $45C8
-        lda     #$DD
+        sta     $C004               ; RAMWRMAIN
+        stz     $45C8
+        lda     #$5D
+        sta     $C005               ; RAMWRAUX
         sta     $45C9
-        lda     #$F0
+        sta     $C004               ; RAMWRMAIN
+        stz     $45C9
+        lda     #$70
+        sta     $C005               ; RAMWRAUX
         sta     $49C8
-        lda     #$8B
+        sta     $C004               ; RAMWRMAIN
+        stz     $49C8
+        lda     #$0B
+        sta     $C005               ; RAMWRAUX
         sta     $49C9
+        sta     $C004               ; RAMWRMAIN
+        stz     $49C9
         rts				; $96ad
 
 
@@ -9625,30 +10110,37 @@ renderStarsTwinkle:			; Modifies star bit patterns to make them twinkle
         txa
         and     #$40
         ora     #$A0
+        and     #$7F                ; DHGR: clear bit 7
         sta     starStates,y		; Each twinkle pattern is used for multiple stars on screen
         txa
         and     #$20
         ora     #$C0
+        and     #$7F                ; DHGR: clear bit 7
         sta     starStates+1,y
         txa
         and     #$10
         ora     #$A0
+        and     #$7F                ; DHGR: clear bit 7
         sta     starStates+2,y
         txa
         and     #$08
         ora     #$84
+        and     #$7F                ; DHGR: clear bit 7
         sta     starStates+3,y
         txa
         and     #$04
         ora     #$82
+        and     #$7F                ; DHGR: clear bit 7
         sta     starStates+4,y
         txa
         and     #$02
         ora     #$84
+        and     #$7F                ; DHGR: clear bit 7
         sta     starStates+5,y
         txa
         and     #$01
         ora     #$82
+        and     #$7F                ; DHGR: clear bit 7
         sta     starStates+6,y
         rts
 
@@ -9660,96 +10152,327 @@ starStates: 		; $971f
 ; all over the screen so the stars all twinkle, but it looks random and chaotic without costing much. Neat!
 blitStars0:
 		lda     starStates
+        sta     $C005               ; RAMWRAUX
         sta     $2022
+        sta     $C004               ; RAMWRMAIN
+        stz     $2022
+        sta     $C005               ; RAMWRAUX
         sta     $2202
+        sta     $C004               ; RAMWRMAIN
+        stz     $2202
+        sta     $C005               ; RAMWRAUX
         sta     $2303
+        sta     $C004               ; RAMWRMAIN
+        stz     $2303
+        sta     $C005               ; RAMWRAUX
         sta     $20B0
-        lda     $9727
+        sta     $C004               ; RAMWRMAIN
+        stz     $20B0
+        lda     starStates+8
+        sta     $C005               ; RAMWRAUX
         sta     $20CB
+        sta     $C004               ; RAMWRMAIN
+        stz     $20CB
+        sta     $C005               ; RAMWRAUX
         sta     $39A0
+        sta     $C004               ; RAMWRMAIN
+        stz     $39A0
+        sta     $C005               ; RAMWRAUX
         sta     $3D5D
+        sta     $C004               ; RAMWRMAIN
+        stz     $3D5D
+        sta     $C005               ; RAMWRAUX
         sta     $3743
+        sta     $C004               ; RAMWRMAIN
+        stz     $3743
+        sta     $C005               ; RAMWRAUX
         sta     $22BC
+        sta     $C004               ; RAMWRMAIN
+        stz     $22BC
+        sta     $C005               ; RAMWRAUX
         sta     $20BA
+        sta     $C004               ; RAMWRMAIN
+        stz     $20BA
         lda     starStates+1
+        sta     $C005               ; RAMWRAUX
         sta     $21BF
+        sta     $C004               ; RAMWRMAIN
+        stz     $21BF
+        sta     $C005               ; RAMWRAUX
         sta     $29B6
+        sta     $C004               ; RAMWRMAIN
+        stz     $29B6
+        sta     $C005               ; RAMWRAUX
         sta     $35C4
+        sta     $C004               ; RAMWRMAIN
+        stz     $35C4
+        sta     $C005               ; RAMWRAUX
         sta     $2045
-        lda     $9728
+        sta     $C004               ; RAMWRMAIN
+        stz     $2045
+        lda     starStates+9
+        sta     $C005               ; RAMWRAUX
         sta     $2338
+        sta     $C004               ; RAMWRMAIN
+        stz     $2338
+        sta     $C005               ; RAMWRAUX
         sta     $3000
+        sta     $C004               ; RAMWRMAIN
+        stz     $3000
+        sta     $C005               ; RAMWRAUX
         sta     $27AF
+        sta     $C004               ; RAMWRMAIN
+        stz     $27AF
+        sta     $C005               ; RAMWRAUX
         sta     $2FFF
+        sta     $C004               ; RAMWRMAIN
+        stz     $2FFF
+        sta     $C005               ; RAMWRAUX
         sta     $21F0
+        sta     $C004               ; RAMWRMAIN
+        stz     $21F0
+        sta     $C005               ; RAMWRAUX
         sta     $2176
-        lda     $9729
+        sta     $C004               ; RAMWRMAIN
+        stz     $2176
+        lda     starStates+10
+        sta     $C005               ; RAMWRAUX
         sta     $20EE
+        sta     $C004               ; RAMWRMAIN
+        stz     $20EE
+        sta     $C005               ; RAMWRAUX
         sta     $2157
+        sta     $C004               ; RAMWRMAIN
+        stz     $2157
+        sta     $C005               ; RAMWRAUX
         sta     $20D4
+        sta     $C004               ; RAMWRMAIN
+        stz     $20D4
+        sta     $C005               ; RAMWRAUX
         sta     $21D3
+        sta     $C004               ; RAMWRMAIN
+        stz     $21D3
+        sta     $C005               ; RAMWRAUX
         sta     $3033
+        sta     $C004               ; RAMWRMAIN
+        stz     $3033
+        sta     $C005               ; RAMWRAUX
         sta     $3DD0
+        sta     $C004               ; RAMWRMAIN
+        stz     $3DD0
         lda     starStates+2
+        sta     $C005               ; RAMWRAUX
         sta     $22B3
+        sta     $C004               ; RAMWRMAIN
+        stz     $22B3
+        sta     $C005               ; RAMWRAUX
         sta     $234B
+        sta     $C004               ; RAMWRMAIN
+        stz     $234B
+        sta     $C005               ; RAMWRAUX
         sta     $2BBE
+        sta     $C004               ; RAMWRMAIN
+        stz     $2BBE
+        sta     $C005               ; RAMWRAUX
         sta     $205E
+        sta     $C004               ; RAMWRMAIN
+        stz     $205E
+        sta     $C005               ; RAMWRAUX
         sta     $2005
-        lda     $972A
+        sta     $C004               ; RAMWRMAIN
+        stz     $2005
+        lda     starStates+11
+        sta     $C005               ; RAMWRAUX
         sta     $21F9
+        sta     $C004               ; RAMWRMAIN
+        stz     $21F9
+        sta     $C005               ; RAMWRAUX
         sta     $2319
+        sta     $C004               ; RAMWRMAIN
+        stz     $2319
+        sta     $C005               ; RAMWRAUX
         sta     $256A
+        sta     $C004               ; RAMWRMAIN
+        stz     $256A
+        sta     $C005               ; RAMWRAUX
         sta     $29AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $29AA
+        sta     $C005               ; RAMWRAUX
         sta     $31AF
+        sta     $C004               ; RAMWRMAIN
+        stz     $31AF
+        sta     $C005               ; RAMWRAUX
         sta     $3A22
+        sta     $C004               ; RAMWRMAIN
+        stz     $3A22
         lda     starStates+3
+        sta     $C005               ; RAMWRAUX
         sta     $2413
+        sta     $C004               ; RAMWRMAIN
+        stz     $2413
+        sta     $C005               ; RAMWRAUX
         sta     $2329
+        sta     $C004               ; RAMWRMAIN
+        stz     $2329
+        sta     $C005               ; RAMWRAUX
         sta     $3028
+        sta     $C004               ; RAMWRMAIN
+        stz     $3028
+        sta     $C005               ; RAMWRAUX
         sta     $2FA5
-        lda     $972B
+        sta     $C004               ; RAMWRMAIN
+        stz     $2FA5
+        lda     starStates+12
+        sta     $C005               ; RAMWRAUX
         sta     $354C
+        sta     $C004               ; RAMWRMAIN
+        stz     $354C
+        sta     $C005               ; RAMWRAUX
         sta     $296F
+        sta     $C004               ; RAMWRMAIN
+        stz     $296F
+        sta     $C005               ; RAMWRAUX
         sta     $20FF
+        sta     $C004               ; RAMWRMAIN
+        stz     $20FF
+        sta     $C005               ; RAMWRAUX
         sta     $3FAC
+        sta     $C004               ; RAMWRMAIN
+        stz     $3FAC
+        sta     $C005               ; RAMWRAUX
         sta     $3030
+        sta     $C004               ; RAMWRMAIN
+        stz     $3030
         lda     starStates+4
+        sta     $C005               ; RAMWRAUX
         sta     $241D
+        sta     $C004               ; RAMWRMAIN
+        stz     $241D
+        sta     $C005               ; RAMWRAUX
         sta     $3DCF
+        sta     $C004               ; RAMWRMAIN
+        stz     $3DCF
+        sta     $C005               ; RAMWRAUX
         sta     $2075
+        sta     $C004               ; RAMWRMAIN
+        stz     $2075
+        sta     $C005               ; RAMWRAUX
         sta     $30D0
+        sta     $C004               ; RAMWRMAIN
+        stz     $30D0
+        sta     $C005               ; RAMWRAUX
         sta     $2385
+        sta     $C004               ; RAMWRMAIN
+        stz     $2385
+        sta     $C005               ; RAMWRAUX
         sta     $230A
-        lda     $972C
+        sta     $C004               ; RAMWRMAIN
+        stz     $230A
+        lda     starStates+13
+        sta     $C005               ; RAMWRAUX
         sta     $3AA7
+        sta     $C004               ; RAMWRMAIN
+        stz     $3AA7
+        sta     $C005               ; RAMWRAUX
         sta     $2800
+        sta     $C004               ; RAMWRMAIN
+        stz     $2800
+        sta     $C005               ; RAMWRAUX
         sta     $318D
+        sta     $C004               ; RAMWRMAIN
+        stz     $318D
+        sta     $C005               ; RAMWRAUX
         sta     $2201
+        sta     $C004               ; RAMWRMAIN
+        stz     $2201
+        sta     $C005               ; RAMWRAUX
         sta     $221C
+        sta     $C004               ; RAMWRMAIN
+        stz     $221C
+        sta     $C005               ; RAMWRAUX
         sta     $2330
+        sta     $C004               ; RAMWRMAIN
+        stz     $2330
+        sta     $C005               ; RAMWRAUX
         sta     $20E3
+        sta     $C004               ; RAMWRMAIN
+        stz     $20E3
         lda     starStates+5
+        sta     $C005               ; RAMWRAUX
         sta     $2010
+        sta     $C004               ; RAMWRMAIN
+        stz     $2010
+        sta     $C005               ; RAMWRAUX
         sta     $28DF
+        sta     $C004               ; RAMWRMAIN
+        stz     $28DF
+        sta     $C005               ; RAMWRAUX
         sta     $2977
+        sta     $C004               ; RAMWRMAIN
+        stz     $2977
+        sta     $C005               ; RAMWRAUX
         sta     $32C6
+        sta     $C004               ; RAMWRMAIN
+        stz     $32C6
+        sta     $C005               ; RAMWRAUX
         sta     $20D8
+        sta     $C004               ; RAMWRMAIN
+        stz     $20D8
         lda     starStates+6
+        sta     $C005               ; RAMWRAUX
         sta     $2427
+        sta     $C004               ; RAMWRMAIN
+        stz     $2427
+        sta     $C005               ; RAMWRAUX
         sta     $2253
+        sta     $C004               ; RAMWRMAIN
+        stz     $2253
+        sta     $C005               ; RAMWRAUX
         sta     $2261
+        sta     $C004               ; RAMWRMAIN
+        stz     $2261
+        sta     $C005               ; RAMWRAUX
         sta     $3DF2
+        sta     $C004               ; RAMWRMAIN
+        stz     $3DF2
+        sta     $C005               ; RAMWRAUX
         sta     $2E03
+        sta     $C004               ; RAMWRMAIN
+        stz     $2E03
+        sta     $C005               ; RAMWRAUX
         sta     $2E10
-        lda     $9726
+        sta     $C004               ; RAMWRMAIN
+        stz     $2E10
+        lda     starStates+7
+        sta     $C005               ; RAMWRAUX
         sta     $3027
+        sta     $C004               ; RAMWRMAIN
+        stz     $3027
+        sta     $C005               ; RAMWRAUX
         sta     $2434
+        sta     $C004               ; RAMWRMAIN
+        stz     $2434
+        sta     $C005               ; RAMWRAUX
         sta     $2427
+        sta     $C004               ; RAMWRMAIN
+        stz     $2427
+        sta     $C005               ; RAMWRAUX
         sta     $3586
+        sta     $C004               ; RAMWRMAIN
+        stz     $3586
+        sta     $C005               ; RAMWRAUX
         sta     $3604
+        sta     $C004               ; RAMWRMAIN
+        stz     $3604
+        sta     $C005               ; RAMWRAUX
         sta     $2294
+        sta     $C004               ; RAMWRMAIN
+        stz     $2294
+        sta     $C005               ; RAMWRAUX
         sta     $2795
+        sta     $C004               ; RAMWRMAIN
+        stz     $2795
         rts
 
 
@@ -9757,96 +10480,327 @@ blitStars0:
 ; all over the screen so the stars all twinkle, but it looks random and chaotic without costing much. Neat!
 blitStars1:
 		lda     starStates
+        sta     $C005               ; RAMWRAUX
         sta     $4022
+        sta     $C004               ; RAMWRMAIN
+        stz     $4022
+        sta     $C005               ; RAMWRAUX
         sta     $4202
+        sta     $C004               ; RAMWRMAIN
+        stz     $4202
+        sta     $C005               ; RAMWRAUX
         sta     $4303
+        sta     $C004               ; RAMWRMAIN
+        stz     $4303
+        sta     $C005               ; RAMWRAUX
         sta     $40B0
-        lda     $9727
+        sta     $C004               ; RAMWRMAIN
+        stz     $40B0
+        lda     starStates+8
+        sta     $C005               ; RAMWRAUX
         sta     $40CB
+        sta     $C004               ; RAMWRMAIN
+        stz     $40CB
+        sta     $C005               ; RAMWRAUX
         sta     $59A0
+        sta     $C004               ; RAMWRMAIN
+        stz     $59A0
+        sta     $C005               ; RAMWRAUX
         sta     $5D5D
+        sta     $C004               ; RAMWRMAIN
+        stz     $5D5D
+        sta     $C005               ; RAMWRAUX
         sta     $5743
+        sta     $C004               ; RAMWRMAIN
+        stz     $5743
+        sta     $C005               ; RAMWRAUX
         sta     $42BC
+        sta     $C004               ; RAMWRMAIN
+        stz     $42BC
+        sta     $C005               ; RAMWRAUX
         sta     $40BA
+        sta     $C004               ; RAMWRMAIN
+        stz     $40BA
         lda     starStates+1
+        sta     $C005               ; RAMWRAUX
         sta     $41BF
+        sta     $C004               ; RAMWRMAIN
+        stz     $41BF
+        sta     $C005               ; RAMWRAUX
         sta     $49B6
+        sta     $C004               ; RAMWRMAIN
+        stz     $49B6
+        sta     $C005               ; RAMWRAUX
         sta     $55C4
+        sta     $C004               ; RAMWRMAIN
+        stz     $55C4
+        sta     $C005               ; RAMWRAUX
         sta     $4045
-        lda     $9728
+        sta     $C004               ; RAMWRMAIN
+        stz     $4045
+        lda     starStates+9
+        sta     $C005               ; RAMWRAUX
         sta     $4338
+        sta     $C004               ; RAMWRMAIN
+        stz     $4338
+        sta     $C005               ; RAMWRAUX
         sta     $5000
+        sta     $C004               ; RAMWRMAIN
+        stz     $5000
+        sta     $C005               ; RAMWRAUX
         sta     $47AF
+        sta     $C004               ; RAMWRMAIN
+        stz     $47AF
+        sta     $C005               ; RAMWRAUX
         sta     $4FFF
+        sta     $C004               ; RAMWRMAIN
+        stz     $4FFF
+        sta     $C005               ; RAMWRAUX
         sta     $41F0
+        sta     $C004               ; RAMWRMAIN
+        stz     $41F0
+        sta     $C005               ; RAMWRAUX
         sta     $4176
-        lda     $9729
+        sta     $C004               ; RAMWRMAIN
+        stz     $4176
+        lda     starStates+10
+        sta     $C005               ; RAMWRAUX
         sta     $40EE
+        sta     $C004               ; RAMWRMAIN
+        stz     $40EE
+        sta     $C005               ; RAMWRAUX
         sta     $4157
+        sta     $C004               ; RAMWRMAIN
+        stz     $4157
+        sta     $C005               ; RAMWRAUX
         sta     $40D4
+        sta     $C004               ; RAMWRMAIN
+        stz     $40D4
+        sta     $C005               ; RAMWRAUX
         sta     $41D3
+        sta     $C004               ; RAMWRMAIN
+        stz     $41D3
+        sta     $C005               ; RAMWRAUX
         sta     $5033
+        sta     $C004               ; RAMWRMAIN
+        stz     $5033
+        sta     $C005               ; RAMWRAUX
         sta     $5DD0
+        sta     $C004               ; RAMWRMAIN
+        stz     $5DD0
         lda     starStates+2
+        sta     $C005               ; RAMWRAUX
         sta     $42B3
+        sta     $C004               ; RAMWRMAIN
+        stz     $42B3
+        sta     $C005               ; RAMWRAUX
         sta     $434B
+        sta     $C004               ; RAMWRMAIN
+        stz     $434B
+        sta     $C005               ; RAMWRAUX
         sta     $4BBE
+        sta     $C004               ; RAMWRMAIN
+        stz     $4BBE
+        sta     $C005               ; RAMWRAUX
         sta     $405E
+        sta     $C004               ; RAMWRMAIN
+        stz     $405E
+        sta     $C005               ; RAMWRAUX
         sta     $4005
-        lda     $972A
+        sta     $C004               ; RAMWRMAIN
+        stz     $4005
+        lda     starStates+11
+        sta     $C005               ; RAMWRAUX
         sta     $41F9
+        sta     $C004               ; RAMWRMAIN
+        stz     $41F9
+        sta     $C005               ; RAMWRAUX
         sta     $4319
+        sta     $C004               ; RAMWRMAIN
+        stz     $4319
+        sta     $C005               ; RAMWRAUX
         sta     $456A
+        sta     $C004               ; RAMWRMAIN
+        stz     $456A
+        sta     $C005               ; RAMWRAUX
         sta     $49AA
+        sta     $C004               ; RAMWRMAIN
+        stz     $49AA
+        sta     $C005               ; RAMWRAUX
         sta     $51AF
+        sta     $C004               ; RAMWRMAIN
+        stz     $51AF
+        sta     $C005               ; RAMWRAUX
         sta     $5A22
+        sta     $C004               ; RAMWRMAIN
+        stz     $5A22
         lda     starStates+3
+        sta     $C005               ; RAMWRAUX
         sta     $4413
+        sta     $C004               ; RAMWRMAIN
+        stz     $4413
+        sta     $C005               ; RAMWRAUX
         sta     $4329
+        sta     $C004               ; RAMWRMAIN
+        stz     $4329
+        sta     $C005               ; RAMWRAUX
         sta     $5028
+        sta     $C004               ; RAMWRMAIN
+        stz     $5028
+        sta     $C005               ; RAMWRAUX
         sta     $4FA5
-        lda     $972B
+        sta     $C004               ; RAMWRMAIN
+        stz     $4FA5
+        lda     starStates+12
+        sta     $C005               ; RAMWRAUX
         sta     $554C
+        sta     $C004               ; RAMWRMAIN
+        stz     $554C
+        sta     $C005               ; RAMWRAUX
         sta     $496F
+        sta     $C004               ; RAMWRMAIN
+        stz     $496F
+        sta     $C005               ; RAMWRAUX
         sta     $40FF
+        sta     $C004               ; RAMWRMAIN
+        stz     $40FF
+        sta     $C005               ; RAMWRAUX
         sta     $5FAC
+        sta     $C004               ; RAMWRMAIN
+        stz     $5FAC
+        sta     $C005               ; RAMWRAUX
         sta     $5030
+        sta     $C004               ; RAMWRMAIN
+        stz     $5030
         lda     starStates+4
+        sta     $C005               ; RAMWRAUX
         sta     $441D
+        sta     $C004               ; RAMWRMAIN
+        stz     $441D
+        sta     $C005               ; RAMWRAUX
         sta     $5DCF
+        sta     $C004               ; RAMWRMAIN
+        stz     $5DCF
+        sta     $C005               ; RAMWRAUX
         sta     $4075
+        sta     $C004               ; RAMWRMAIN
+        stz     $4075
+        sta     $C005               ; RAMWRAUX
         sta     $50D0
+        sta     $C004               ; RAMWRMAIN
+        stz     $50D0
+        sta     $C005               ; RAMWRAUX
         sta     $4385
+        sta     $C004               ; RAMWRMAIN
+        stz     $4385
+        sta     $C005               ; RAMWRAUX
         sta     $430A
-        lda     $972C
+        sta     $C004               ; RAMWRMAIN
+        stz     $430A
+        lda     starStates+13
+        sta     $C005               ; RAMWRAUX
         sta     $5AA7
+        sta     $C004               ; RAMWRMAIN
+        stz     $5AA7
+        sta     $C005               ; RAMWRAUX
         sta     $4800
+        sta     $C004               ; RAMWRMAIN
+        stz     $4800
+        sta     $C005               ; RAMWRAUX
         sta     $518D
+        sta     $C004               ; RAMWRMAIN
+        stz     $518D
+        sta     $C005               ; RAMWRAUX
         sta     $4201
+        sta     $C004               ; RAMWRMAIN
+        stz     $4201
+        sta     $C005               ; RAMWRAUX
         sta     $421C
+        sta     $C004               ; RAMWRMAIN
+        stz     $421C
+        sta     $C005               ; RAMWRAUX
         sta     $4330
+        sta     $C004               ; RAMWRMAIN
+        stz     $4330
+        sta     $C005               ; RAMWRAUX
         sta     $40E3
+        sta     $C004               ; RAMWRMAIN
+        stz     $40E3
         lda     starStates+5
+        sta     $C005               ; RAMWRAUX
         sta     $4010
+        sta     $C004               ; RAMWRMAIN
+        stz     $4010
+        sta     $C005               ; RAMWRAUX
         sta     $48DF
+        sta     $C004               ; RAMWRMAIN
+        stz     $48DF
+        sta     $C005               ; RAMWRAUX
         sta     $4977
+        sta     $C004               ; RAMWRMAIN
+        stz     $4977
+        sta     $C005               ; RAMWRAUX
         sta     $52C6
+        sta     $C004               ; RAMWRMAIN
+        stz     $52C6
+        sta     $C005               ; RAMWRAUX
         sta     $40D8
+        sta     $C004               ; RAMWRMAIN
+        stz     $40D8
         lda     starStates+6
+        sta     $C005               ; RAMWRAUX
         sta     $4427
+        sta     $C004               ; RAMWRMAIN
+        stz     $4427
+        sta     $C005               ; RAMWRAUX
         sta     $4253
+        sta     $C004               ; RAMWRMAIN
+        stz     $4253
+        sta     $C005               ; RAMWRAUX
         sta     $4261
+        sta     $C004               ; RAMWRMAIN
+        stz     $4261
+        sta     $C005               ; RAMWRAUX
         sta     $5DF2
+        sta     $C004               ; RAMWRMAIN
+        stz     $5DF2
+        sta     $C005               ; RAMWRAUX
         sta     $4E03
+        sta     $C004               ; RAMWRMAIN
+        stz     $4E03
+        sta     $C005               ; RAMWRAUX
         sta     $4E10
-        lda     $9726
+        sta     $C004               ; RAMWRMAIN
+        stz     $4E10
+        lda     starStates+7
+        sta     $C005               ; RAMWRAUX
         sta     $5027
+        sta     $C004               ; RAMWRMAIN
+        stz     $5027
+        sta     $C005               ; RAMWRAUX
         sta     $4434
+        sta     $C004               ; RAMWRMAIN
+        stz     $4434
+        sta     $C005               ; RAMWRAUX
         sta     $4427
+        sta     $C004               ; RAMWRMAIN
+        stz     $4427
+        sta     $C005               ; RAMWRAUX
         sta     $5586
+        sta     $C004               ; RAMWRMAIN
+        stz     $5586
+        sta     $C005               ; RAMWRAUX
         sta     $5604
+        sta     $C004               ; RAMWRMAIN
+        stz     $5604
+        sta     $C005               ; RAMWRAUX
         sta     $4294
+        sta     $C004               ; RAMWRMAIN
+        stz     $4294
+        sta     $C005               ; RAMWRAUX
         sta     $4795
+        sta     $C004               ; RAMWRMAIN
+        stz     $4795
         rts				; $9950
 
 
@@ -10320,7 +11274,7 @@ eraseSpriteDone:
 ; W,H, Pixels for a sprite
 skyBackground:			; $9c5d
 	.byte	$07,$17			; W (in bytes) x H. Dimensions are modified as needed
-	.byte	$80,$80,$80,$80	; Black line
+	.byte	$00,$00,$00,$00	; Black line (bit 7 cleared for DHGR)
 
 
 ; This is a pesudo-sprite that renders the pink ground behind a sprite

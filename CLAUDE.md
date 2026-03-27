@@ -244,6 +244,26 @@ enables scripted memory inspection for byte-level validation without manual inte
 - **DHGR mode active**: game runs to title screen, DHGR screen shows graphical content.
   The garbled appearance is expected — HGR blit functions are Story 4 work.
 
+### Story 3 findings
+- **blitRect row table overrun**: `blitRect` used sprite height as row count, decrementing
+  `ZP_RENDER_CURR_Y` below 0 (wrapping to 255). Row table lookup at index 192+ returns
+  $00 from zero-padded slack area. The resulting write address $0000+Y (Y=column byte)
+  pointed directly into ZP $00-$27, corrupting ZP vectors $28-$2B with whatever pixel
+  values were being blitted. Fix: added `lda ZP_RENDER_CURR_Y / beq blitRectDone` bounds
+  check before `dec ZP_RENDER_CURR_Y`.
+- **blitRect RAMWRAUX missing SEI/CLI**: Added SEI before `STA $C005` (RAMWRAUX) and CLI
+  after `STA $C004` (RAMWRMAIN) in blitRect. ProDOS 1/60-sec timer IRQ was firing during
+  the RAMWRAUX window; the IRQ handler restores RAMWRMAIN then writes cursor state to main
+  ZP $24-$2F, corrupting game vectors. The bounds-check fix was the actual root cause;
+  the SEI/CLI is defensive hardening.
+- **screenFill, renderMoon, renderStars, blitStars** all DHGR-converted (work done in
+  previous sessions). Dual-bank RAMWRAUX/RAMWRMAIN pattern with `stz` for main bank zeros.
+- **blitAlignedImage stub** — RTS. Houses not visible as distinct shapes; terrain/base
+  render via blitRect which works. Houses will be properly rendered in Story 4+ when
+  CHOPGFX is restored at $A400.
+- **Sky confirmed black**: DHGR page 1 rows 0, 1, 2 (addresses $2000, $2400, $2800 main
+  bank) all $00 at 10M cycles — sky fill correct.
+
 ---
 
 ## Conversion Roadmap
@@ -254,8 +274,8 @@ the prerequisite for the next. See PLAN.md for full acceptance criteria per stor
 ```
 Story 0  Repo setup, reference build, CLAUDE.md + PLAN.md  [DONE — bb024d3..3d435eb]
 Story 1  DHGR mode init (blank screen, correct soft switches)  [DONE — bb024d3]
-Story 2  Row tables + dual-bank write infrastructure (12-stripe test)
-Story 3  Static background: sky, stars, terrain, moon, houses
+Story 2  Row tables + dual-bank write infrastructure (12-stripe test)  [DONE — 2026-03-27]
+Story 3  Static background: sky, stars, terrain, moon, houses  [DONE — 2026-03-27]
 Story 4  blitImage ported — single sprite (helicopter head-on only)
 Story 5  All 9 blit functions + full sprite data conversion (1bpp → 4bpp)
 Story 6  FPS benchmark baseline recorded at $7000/$7001

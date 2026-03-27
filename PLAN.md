@@ -12,9 +12,9 @@
 
 > Update this section at the start of each session. It is the primary session-resume signal.
 
-**Current story**: Story 3 — Static Background Render
+**Current story**: Story 4 — blitImage DHGR Port (Single Sprite)
 **Status**: NOT STARTED
-**Last session**: 2026-03-27 (Story 2 completed)
+**Last session**: 2026-03-27 (Story 3 completed)
 **Blocking issues**: None
 
 ---
@@ -27,6 +27,7 @@
 |--------|-------|-------|------|
 | Reference binary checksum | (capture in Story 0) | S0 | — |
 | Story 2 binary checksum | d66da169a5a98ba9bd5e8889c5a25987 | S2 | 2026-03-27 |
+| Story 3 binary checksum | 443251a24d7afaa5404eac99377dbbb6 | S3 | 2026-03-27 |
 | DHGR baseline cycles/frame | (capture in Story 6) | S6 | — |
 | DHGR baseline FPS | (compute in Story 6) | S6 | — |
 | Post-opt-7a cycles/frame | (capture in Story 7a) | S7 | — |
@@ -263,7 +264,7 @@ Capture screenshot of Jace showing the 12-stripe test pattern. Review for 12 dis
 
 ### Story 3: Static Background Render
 
-**Status**: NOT STARTED
+**Status**: DONE — 2026-03-27
 **Prerequisite**: Story 2 complete and verified.
 
 **Scope**: Convert background and terrain rendering to DHGR. No sprites in this story — only background elements that do not use sprite pointer lookups.
