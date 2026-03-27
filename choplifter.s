@@ -2593,8 +2593,94 @@ tiltLeftDeadCodeByteIndex:		; $19d7
 
 ; Blits a rectangular image with pixel alignment that was previously configured with
 ; a helper routine (such as setBlitPos, setAnimLoc, or clipToScroll)
+; Story 4: DHGR dual-bank sprite blit. Reads from ZP_SPRITEANIM_PTR (set by caller).
+; Guard: if sprite pointer high byte < $AB, returns immediately (old HGR data, not DHGR).
+; Per-pixel transparency: $00 bytes are skipped (background shows through).
 blitImage:			; $19d8
-		rts
+        sta     ZP_REGISTER_A           ; save registers
+        stx     ZP_REGISTER_X
+        sty     ZP_REGISTER_Y
+
+        jsr     parseImageHeader        ; copies SPRITEANIM_PTR to PARAM_PTR, reads W/H, advances +2
+
+        ; Advance past color byte and reserved byte (bytes 2 and 3 of 4-byte header)
+        clc
+        lda     ZP_PARAM_PTR_L
+        adc     #2
+        sta     ZP_PARAM_PTR_L
+        bcc     :+
+        inc     ZP_PARAM_PTR_H
+:
+        ; Guard: only render if sprite data is in DHGR range ($AB00+)
+        lda     ZP_PARAM_PTR_H
+        cmp     #$AB
+        bcc     blitImageDone
+
+        ; Compute starting column byte from ZP_SCREEN_X_L
+        jsr     calcRowBitByte          ; -> ZP_CURR_X_BYTE
+
+        ; Init row counter from Y screen position
+        lda     ZP_SCREEN_Y
+        sta     ZP_RENDER_CURR_Y
+
+        ; Save starting column for each row restart
+        lda     ZP_CURR_X_BYTE
+        sta     ZP_FILL_BYTE            ; reuse ZP_FILL_BYTE as col save
+
+blitImageRowLoop:
+        ; Look up DHGR row base address
+        ldx     ZP_RENDER_CURR_Y
+        lda     dhgrRowLo,x
+        sta     ZP_DHGR_ROW_L
+        lda     dhgrRowHi,x
+        eor     ZP_PAGEMASK
+        sta     ZP_DHGR_ROW_H
+
+        ; Write each sprite column to aux bank then main bank
+        ldy     ZP_FILL_BYTE            ; Y = current screen column index
+        ldx     #0                      ; X = sprite data column index
+
+blitImageColLoop:
+        ; X = sprite column (0..width-1), Y = screen column byte
+        sty     ZP_DRAWSCRATCH1         ; save screen column Y
+        txa
+        tay                             ; Y = sprite column index for indirect read
+        lda     (ZP_PARAM_PTR_L),y      ; read sprite byte[X]
+        ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
+        beq     blitImageSkipPx         ; $00 = transparent, skip
+        and     #$7F                    ; clear bit 7 (DHGR requirement)
+        sei
+        sta     $C005                   ; RAMWRAUX — route writes to aux bank
+        sta     (ZP_DHGR_ROW_L),y      ; write aux bank
+        sta     $C004                   ; RAMWRMAIN — restore main bank
+        cli
+        sta     (ZP_DHGR_ROW_L),y      ; write main bank (same value — Story 4 white-only)
+blitImageSkipPx:
+        iny                             ; advance screen column
+        inx                             ; advance sprite column
+        cpx     ZP_IMAGE_W
+        bcc     blitImageColLoop
+
+        ; Advance sprite pointer to next row
+        clc
+        lda     ZP_PARAM_PTR_L
+        adc     ZP_IMAGE_W
+        sta     ZP_PARAM_PTR_L
+        bcc     :+
+        inc     ZP_PARAM_PTR_H
+:
+        ; Row bounds check — stop before wrapping below 0
+        lda     ZP_RENDER_CURR_Y
+        beq     blitImageDone
+        dec     ZP_RENDER_CURR_Y
+        dec     ZP_IMAGE_H
+        bne     blitImageRowLoop
+
+blitImageDone:
+        lda     ZP_REGISTER_A           ; restore registers
+        ldx     ZP_REGISTER_X
+        ldy     ZP_REGISTER_Y
+        rts
 
 
 ; Blits a rectangular image flipped left/right with pixel alignment. The image was previously
@@ -11785,7 +11871,7 @@ chopperSideSpriteTable:		; $a000
 
 ; A table of sprites to use when head-on or in rotation animation. Tilt is done with tilt-renderer
 chopperHeadOnSpriteTable:		; $a016
-	.word	$a41b		; Normal head-on view, all tilt angles
+	.word	chopperHeadOnDHGR0	; DHGR head-on frame 0 (Story 4)
 	.word	$a437		; Partially rotated from head-on to sideways (frame 1)
 	.word	$a453		; Partially rotated from head-on to sideways (frame 2)
 	.word	$a47c		; Partially rotated from head-on to sideways (frame 3)
@@ -11989,4 +12075,39 @@ sortieGraphicsTable:	; $a0fa
 ; Sprite graphics data unchanged from original — still at $A102.
 ; DHGR row tables have been placed in the HICODE slack area ($8E01+)
 ; to avoid conflicting with CHOPGFX (which loads at $A102).
-.org $A102
+; Story 4: DHGR sprite data begins at $AB1C (immediately after CHOP1 ends at $AB1B).
+.org $AB1C
+
+; DHGR head-on helicopter frame 0 — 2 columns x 13 rows, white
+; Source: CHOPGFX bytes at offset $319, 13 rows x 2 bytes, each AND $7F
+chopperHeadOnDHGR0:
+    .byte 2                 ; width in DHGR columns
+    .byte 13                ; height in rows
+    .byte 15                ; color index: white ($0F)
+    .byte 0                 ; reserved
+    ; Row 0:
+    .byte $0C, $0D
+    ; Row 1:
+    .byte $0F, $00
+    ; Row 2:
+    .byte $0F, $00
+    ; Row 3:
+    .byte $0F, $00
+    ; Row 4:
+    .byte $3F, $40
+    ; Row 5:
+    .byte $60, $60
+    ; Row 6:
+    .byte $40, $20
+    ; Row 7:
+    .byte $40, $30
+    ; Row 8:
+    .byte $7F, $70
+    ; Row 9:
+    .byte $7F, $60
+    ; Row 10:
+    .byte $1F, $00
+    ; Row 11:
+    .byte $70, $60
+    ; Row 12:
+    .byte $60, $70

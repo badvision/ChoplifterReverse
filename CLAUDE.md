@@ -42,7 +42,8 @@ $A000–$A0FF  Sprite pointer tables (animation frame sequences) — UNCHANGED
 $8E01–$8EC0  dhgrRowLo — 192 DHGR row address low bytes (in HICODE slack)
 $8EC1–$8F80  dhgrRowHi — 192 DHGR row address high bytes (in HICODE slack)
 $A100–$A3FF  (reserved for future DHGR row tables if needed; currently unused)
-$A400–$BEFF  DHGR sprite pixel data — main bank nibbles
+$A102–$AB1B  CHOP1 occupies this range (19228 bytes, HGR sprite pixel data — not yet DHGR)
+$AB1C+       DHGR sprite pixel data starts here — main bank nibbles (Story 4+)
 $BF00+       ProDOS boundary — do not touch
 
 AUX MEMORY (not executable — data only)
@@ -263,6 +264,35 @@ enables scripted memory inspection for byte-level validation without manual inte
   CHOPGFX is restored at $A400.
 - **Sky confirmed black**: DHGR page 1 rows 0, 1, 2 (addresses $2000, $2400, $2800 main
   bank) all $00 at 10M cycles — sky fill correct.
+
+### Story 4 findings
+- **CHOP1 end address**: CHOP1 (19228 bytes) loads at $6000, ends at $AB1B. First available
+  DHGR sprite data address is $AB1C. Story 4 sprite data placed there with `.org $AB1C` in
+  the HICODE segment of choplifter.s.
+- **parseImageHeader advances +2 only**: `parseImageHeader` reads bytes 0 (width) and 1
+  (height), then advances ZP_PARAM_PTR by exactly 2. After the call, ZP_PARAM_PTR points
+  at byte 2 (color index), NOT at pixel data (byte 4). `blitImage` must manually add +2
+  to skip the color/reserved bytes before reaching pixel data.
+- **Guard threshold $AB**: The guard `lda ZP_PARAM_PTR_H / cmp #$AB / bcc blitImageDone`
+  uses $AB because DHGR sprite data starts at $AB1C ($AB00 page). All legacy HGR sprite
+  pointers point at $A100-$AABB range (CHOPGFX data at $A102+), which passes the guard.
+  Only confirmed DHGR data at $AB1C+ should be rendered; old data guard prevents garbage.
+- **Inner loop register conflict**: 6502 indirect-Y (`(ptr),y`) requires Y as the offset.
+  With Y needed for both sprite column index and screen column index, a save/restore via
+  ZP_DRAWSCRATCH1 is used: `sty ZP_DRAWSCRATCH1 / txa / tay / lda (ptr),y /
+  ldy ZP_DRAWSCRATCH1` to use X as sprite column and Y as screen column.
+- **Sprite visible but colorful**: NTSC DHGR color encoding produces color fringing on the
+  white sprite bytes. This is expected — Story 4 writes the same byte value to both aux
+  and main banks (simplified white-only mode). True 4bpp color encoding requires separate
+  aux/main nibble data, deferred to Story 5.
+- **chopperHeadOnSpriteTable runtime animation**: After 10M cycles the game's animation
+  counter has advanced the table frame pointer away from $A016=$AB1C. This is normal
+  runtime behavior — the table cycles through 5 head-on frames. The initial frame (index 0)
+  renders the DHGR sprite; other frames still point at HGR data and are rejected by the
+  guard, producing transparent frames during rotation animation.
+- **Story 5 note**: The simplified single-bank write (same value to aux and main) must be
+  replaced with true dual-bank color data: aux bank receives lower nibble, main bank
+  receives upper nibble of each DHGR 4bpp color pair.
 
 ---
 

@@ -12,9 +12,9 @@
 
 > Update this section at the start of each session. It is the primary session-resume signal.
 
-**Current story**: Story 4 — blitImage DHGR Port (Single Sprite)
+**Current story**: Story 5 — Full Sprite Pipeline
 **Status**: NOT STARTED
-**Last session**: 2026-03-27 (Story 3 completed)
+**Last session**: 2026-03-27 (Story 4 completed)
 **Blocking issues**: None
 
 ---
@@ -28,6 +28,7 @@
 | Reference binary checksum | (capture in Story 0) | S0 | — |
 | Story 2 binary checksum | d66da169a5a98ba9bd5e8889c5a25987 | S2 | 2026-03-27 |
 | Story 3 binary checksum | 443251a24d7afaa5404eac99377dbbb6 | S3 | 2026-03-27 |
+| Story 4 binary checksum | 5e36d19a8480d46ed2a1c7a74178ce8e | S4 | 2026-03-27 |
 | DHGR baseline cycles/frame | (capture in Story 6) | S6 | — |
 | DHGR baseline FPS | (compute in Story 6) | S6 | — |
 | Post-opt-7a cycles/frame | (capture in Story 7a) | S7 | — |
@@ -45,6 +46,20 @@ Stretch target: >= 25 FPS (40,875 cycles/frame maximum)
 ## Session Notes
 
 > Append one entry per session. Newest at top.
+
+### Session 3 — 2026-03-27
+- Story 4 completed: blitImage DHGR port — helicopter head-on sprite visible.
+- Key implementation: chopperHeadOnDHGR0 sprite data placed at $AB1C (first byte after
+  CHOP1 at $AB1B). Data is 2 cols × 13 rows, white, CHOPGFX bytes ANDed with $7F.
+- Key discovery: parseImageHeader advances ZP_PARAM_PTR by only 2 bytes (reads bytes 0
+  and 1), not 4. Must manually add +2 after call to skip color/reserved bytes.
+- Key discovery: inner loop register conflict resolved with ZP_DRAWSCRATCH1 save/restore —
+  X used for sprite column, Y for screen column, with txa/tay for indirect-Y reads.
+- Guard confirmed working: ptr_H < $AB triggers early RTS, old HGR pointers transparent.
+- Sprite visible on screenshot: head-on helicopter shape with NTSC color in upper-right
+  area, black sky/stars background and terrain still intact (Story 3 background preserved).
+- Memory at $AB1C = $02 confirmed. chopperHeadOnSpriteTable[0] = $AB1C confirmed.
+- Story 4 CHOPLIFTER.po MD5: 5e36d19a8480d46ed2a1c7a74178ce8e
 
 ### Session 2 — 2026-03-27
 - Story 2 completed: DHGR row tables, screenFill, stripeTest implemented and validated.
@@ -303,7 +318,7 @@ All 40 bytes of the saved bin must equal the sky fill byte.
 
 ### Story 4: Single Sprite Blit (Player Helicopter)
 
-**Status**: NOT STARTED
+**Status**: DONE — 2026-03-27
 **Prerequisite**: Story 3 complete and verified.
 
 **Scope**: Port `blitImage` to DHGR for a single sprite only. Target: `chopperHeadOnSpriteTable[0]` (forward-facing helicopter, used in title sequence). All other sprites remain transparent/stubbed.
