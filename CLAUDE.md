@@ -169,8 +169,8 @@ Use ONLY the Maven/Java version for all automation and visual validation.
 ```bash
 cd ~/Documents/code/jace
 mvn -q exec:java -Dexec.mainClass="jace.JaceLauncher" -Dexec.args="--terminal" <<'EOF'
-bootdisk d1 /Users/brobert/Documents/code/ChoplifterReverse/CHOPLIFTER.po
-run 5000000
+bootdisk d1 /Users/brobert/Documents/code/ChoplifterReverse/CHOPLIFTER.po 7
+run 10000000
 screenshot /tmp/jace_frame.png
 m
 C07F
@@ -179,6 +179,9 @@ qq
 EOF
 # Then: Read /tmp/jace_frame.png for multimodal review
 ```
+
+**Always pass `7` as the slot argument** — slot 7 = SmartPort = instant disk reads.
+Slot 6 (default) = spinning Disk ][ emulation = ~600 real seconds to boot.
 
 ### Key Maven terminal commands:
 - `bootdisk d1 <path>` — load disk image and boot
@@ -227,17 +230,12 @@ enables scripted memory inspection for byte-level validation without manual inte
   overwrite them. Tables must be placed BEFORE $A102 or in a non-overlapping area.
   SOLUTION: Tables placed in HICODE slack at $8E01 (dhgrRowLo) and $8EC1 (dhgrRowHi).
   Both are within the $6000-$A0FF coverage of fileRead1 in the loader.
-- **Jace terminal `run N` is real-time throttled at ~1MHz**: 1M cycles ≈ 1 real second.
-  ProDOS + 4-file disk load requires ~600M+ cycles (~600 real seconds). Do NOT rely on
-  `run N` to reach game-loop state in automation — it will time out or be impractical.
-  Use `savebin`/`saveauxbin` memory dumps for validation instead of Jace screenshots
-  for anything that requires the game to be fully booted.
-- **Preferred validation pattern for Stories 3+**: Write test data to known ZP addresses
-  in the game code itself, then `savebin` those addresses after a short `run` (3-5M cycles
-  gets past ProDOS ROM init into early loader). For visual validation use the `screenshot`
-  command only if DHGR enable has already run (it doesn't run until deep in boot).
+- **Always use slot 7 (SmartPort) for disk images**: `bootdisk d1 CHOPLIFTER.po 7`
+  Slot 6 (default) emulates a spinning Disk ][ — ProDOS file I/O takes ~600 real seconds.
+  Slot 7 (SmartPort) is a virtual hard-disk with instant reads. Full ProDOS boot + game
+  load completes in ~5-10M cycles with slot 7.
 - **`bootdisk` stops at ROM address $FA62**: stops as soon as PC >= $2000 (ROM reset
-  vector). ProDOS loader runs AFTER this. Always follow with `run`.
+  vector). ProDOS loader runs AFTER this. Always follow with `run 10000000` (slot 7).
 - **screenFill confirmed working**: page 2 cleared to $00 ($4000=all zeros), page 1 also
   initially cleared then overwritten by stripeTest.
 - **stripeTest confirmed working**: $2000=$77 (row 191 = stripe 11, fill $77 correct).
