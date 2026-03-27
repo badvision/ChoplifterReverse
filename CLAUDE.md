@@ -227,11 +227,17 @@ enables scripted memory inspection for byte-level validation without manual inte
   overwrite them. Tables must be placed BEFORE $A102 or in a non-overlapping area.
   SOLUTION: Tables placed in HICODE slack at $8E01 (dhgrRowLo) and $8EC1 (dhgrRowHi).
   Both are within the $6000-$A0FF coverage of fileRead1 in the loader.
-- **ProDOS boot requires ~10M+ emulated cycles**: Jace validation must use `run 20000000`
-  minimum. Using `run 5000000` leaves the system still in ProDOS boot phase.
-- **`bootdisk` stops at ROM address $FA62**: The Jace `bootdisk` command stops as soon as
-  PC >= $2000, which matches the ROM reset vector at $FA62. The ProDOS loader runs AFTER
-  this. Always follow `bootdisk` with a large `run` count.
+- **Jace terminal `run N` is real-time throttled at ~1MHz**: 1M cycles ≈ 1 real second.
+  ProDOS + 4-file disk load requires ~600M+ cycles (~600 real seconds). Do NOT rely on
+  `run N` to reach game-loop state in automation — it will time out or be impractical.
+  Use `savebin`/`saveauxbin` memory dumps for validation instead of Jace screenshots
+  for anything that requires the game to be fully booted.
+- **Preferred validation pattern for Stories 3+**: Write test data to known ZP addresses
+  in the game code itself, then `savebin` those addresses after a short `run` (3-5M cycles
+  gets past ProDOS ROM init into early loader). For visual validation use the `screenshot`
+  command only if DHGR enable has already run (it doesn't run until deep in boot).
+- **`bootdisk` stops at ROM address $FA62**: stops as soon as PC >= $2000 (ROM reset
+  vector). ProDOS loader runs AFTER this. Always follow with `run`.
 - **screenFill confirmed working**: page 2 cleared to $00 ($4000=all zeros), page 1 also
   initially cleared then overwritten by stripeTest.
 - **stripeTest confirmed working**: $2000=$77 (row 191 = stripe 11, fill $77 correct).
