@@ -210,14 +210,26 @@ enables scripted memory inspection for byte-level validation without manual inte
 
 ---
 
+## Discovered Facts (updated as stories complete)
+
+### Story 1 findings
+- `enableHiResGraphics` is **dead code** in normal gameplay — called only from a loader stub
+  at `$300-$305` that is not part of the main game flow. The actual graphics init path goes
+  through `initRendering`. Story 2+ work on DHGR initialization must target `initRendering`.
+- AN3 address: **`$C05E` works** on Jace (IIe standard). `$C07E` fallback not needed.
+- Uninitialized DHGR VRAM produces vertical color stripes (not HGR diagonal banding) — this
+  is expected until `screenFill` is implemented in Story 2.
+
+---
+
 ## Conversion Roadmap
 
 9 sequential stories. No parallelism — each story produces a runnable binary that is
 the prerequisite for the next. See PLAN.md for full acceptance criteria per story.
 
 ```
-Story 0  Repo setup, reference build, CLAUDE.md + PLAN.md ← YOU ARE HERE
-Story 1  DHGR mode init (blank screen, correct soft switches)
+Story 0  Repo setup, reference build, CLAUDE.md + PLAN.md  [DONE — bb024d3..3d435eb]
+Story 1  DHGR mode init (blank screen, correct soft switches)  [DONE — bb024d3]
 Story 2  Row tables + dual-bank write infrastructure (12-stripe test)
 Story 3  Static background: sky, stars, terrain, moon, houses
 Story 4  blitImage ported — single sprite (helicopter head-on only)
