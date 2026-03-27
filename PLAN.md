@@ -28,7 +28,7 @@
 | Reference binary checksum | (capture in Story 0) | S0 | — |
 | Story 2 binary checksum | d66da169a5a98ba9bd5e8889c5a25987 | S2 | 2026-03-27 |
 | Story 3 binary checksum | 443251a24d7afaa5404eac99377dbbb6 | S3 | 2026-03-27 |
-| Story 4 binary checksum | 5e36d19a8480d46ed2a1c7a74178ce8e | S4 | 2026-03-27 |
+| Story 4 CHOP1 MD5 (stable) | da860d5d218f567b9777b940243f97c7 | S4 | 2026-03-27 |
 | DHGR baseline cycles/frame | (capture in Story 6) | S6 | — |
 | DHGR baseline FPS | (compute in Story 6) | S6 | — |
 | Post-opt-7a cycles/frame | (capture in Story 7a) | S7 | — |
@@ -36,6 +36,10 @@
 | Post-opt-7c cycles/frame | (capture in Story 7c) | S7 | — |
 | Final FPS (Story 8) | (capture in Story 8) | S8 | — |
 | Final binary checksum | (capture in Story 8) | S8 | — |
+
+Note: `cadius CREATEVOLUME` embeds a build timestamp in volume metadata.
+`CHOPLIFTER.po` MD5 is non-deterministic (changes on every rebuild).
+Use CHOP1 (or CHOP0) MD5 for all regression baselines — those are stable.
 
 FPS formula: `1,021,875 / [cycles_per_frame]`
 Target: >= 20 FPS (51,094 cycles/frame maximum)
@@ -59,7 +63,8 @@ Stretch target: >= 25 FPS (40,875 cycles/frame maximum)
 - Sprite visible on screenshot: head-on helicopter shape with NTSC color in upper-right
   area, black sky/stars background and terrain still intact (Story 3 background preserved).
 - Memory at $AB1C = $02 confirmed. chopperHeadOnSpriteTable[0] = $AB1C confirmed.
-- Story 4 CHOPLIFTER.po MD5: 5e36d19a8480d46ed2a1c7a74178ce8e
+- Story 4 CHOP1 MD5 (stable): da860d5d218f567b9777b940243f97c7
+- Story 4 CHOPLIFTER.po MD5 (non-deterministic, cadius timestamp): varies per rebuild
 
 ### Session 2 — 2026-03-27
 - Story 2 completed: DHGR row tables, screenFill, stripeTest implemented and validated.

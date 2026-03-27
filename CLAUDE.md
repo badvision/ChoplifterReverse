@@ -345,6 +345,11 @@ Binary output: CHOPLIFTER.po (146432 bytes, ProDOS disk image)
 Reference checksum: `976db862ffc405b4f1c83545edd8c2ed  CHOPLIFTER.po` (146,432 bytes)
 Note: use `make clean diskimage loader choplifter` — NOT `make all` (emulate target requires Xcode)
 
+IMPORTANT: `cadius CREATEVOLUME` embeds a build timestamp in volume metadata.
+`CHOPLIFTER.po` MD5 is non-deterministic — it changes on every rebuild.
+Always use CHOP1 (or CHOP0) MD5 as regression baselines, not CHOPLIFTER.po MD5.
+Story 4 CHOP1 MD5: da860d5d218f567b9777b940243f97c7
+
 ### GitHub Auth
 
 Use the `badvision` account for all git push and PR operations:
