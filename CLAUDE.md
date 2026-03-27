@@ -159,40 +159,36 @@ Run via `make sprites`. Also produces PNG preview for visual validation.
 
 **This is your primary validation tool. Every story requires visual validation via Jace.**
 
-### Two modes:
+### One mode: Maven terminal (everything — checks, memory, AND screenshots)
 
-**GUI (visual validation + screenshots)**:
-```bash
-open "/Users/brobert/Downloads/Jace"
-# Then load disk: drag .po file onto window or use File menu
-# Screenshot: screencapture -x /tmp/jace_frame.png
-# Then use Read tool to view the PNG for multimodal review
-```
+The standalone binary (`/Users/brobert/Downloads/Jace`) does NOT support terminal/scripting mode.
+Use ONLY the Maven/Java version for all automation and visual validation.
 
-**Maven terminal (automated checks, memory inspection)**:
 ```bash
 cd ~/Documents/code/jace
-mvn -q exec:java \
-  -Dexec.mainClass="jace.JaceLauncher" \
-  -Dexec.args="--terminal" <<'EOF'
+mvn -q exec:java -Dexec.mainClass="jace.JaceLauncher" -Dexec.args="--terminal" <<'EOF'
 bootdisk d1 /Users/brobert/Documents/code/ChoplifterReverse/CHOPLIFTER.po
 run 5000000
+screenshot /tmp/jace_frame.png
 m
 C07F
 b
 qq
 EOF
+# Then: Read /tmp/jace_frame.png for multimodal review
 ```
 
 ### Key Maven terminal commands:
-- `bootdisk d1 <path>` — load disk image
+- `bootdisk d1 <path>` — load disk image and boot
 - `run <cycles>` — execute N cycles (1,021,875 cycles ≈ 1 second)
+- `screenshot <file.png>` (alias `ss2`) — render current DHGR screen to 1120×384 PNG with NTSC color
 - `m` — enter memory monitor
 - `<addr>` — show byte at address
 - `<addr>.<addr>` — show range
 - `b` — back from monitor
-- `savebin <file> <addr> <len>` — save memory region to file (hex length)
-- `showtext` — show text screen
+- `savebin <file> <addr> <len>` — save main memory region to file (hex length)
+- `saveauxbin <file> <addr> <len>` — save aux memory region to file
+- `showtext` — show text screen contents
 - `qq` — quit
 
 ### FPS measurement (Story 6+):
