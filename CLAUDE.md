@@ -260,4 +260,5 @@ make clean        # clean build artifacts
 ```
 
 Binary output: CHOPLIFTER.po (146432 bytes, ProDOS disk image)
-Reference checksum stored in: /tmp/choplifter-s0-reference.md5
+Reference checksum: `976db862ffc405b4f1c83545edd8c2ed  CHOPLIFTER.po` (146,432 bytes)
+Note: use `make clean diskimage loader choplifter` — NOT `make all` (emulate target requires Xcode)
