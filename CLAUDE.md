@@ -39,7 +39,9 @@ $8E01–$8FFF  511 bytes slack — available for loop unrolling
 $9000–$9F78  Rendering subsystem (renderMoon, terrain, background)
 $9F79–$9FFF  135 bytes slack
 $A000–$A0FF  Sprite pointer tables (animation frame sequences) — UNCHANGED
-$A100–$A3FF  DHGR row address tables (768 bytes, 4 tables × 192 entries)
+$8E01–$8EC0  dhgrRowLo — 192 DHGR row address low bytes (in HICODE slack)
+$8EC1–$8F80  dhgrRowHi — 192 DHGR row address high bytes (in HICODE slack)
+$A100–$A3FF  (reserved for future DHGR row tables if needed; currently unused)
 $A400–$BEFF  DHGR sprite pixel data — main bank nibbles
 $BF00+       ProDOS boundary — do not touch
 
@@ -63,12 +65,12 @@ ZP_SCROLLPOS       = $8E
 ; Repurposed
 ZP_PALETTE         = $8C  ; → ZP_BLIT_FLAGS: bit0=flip-H, bit1=flip-V, bit2=use-aux
 
-; NEW — confirmed unused in original
-ZP_AUXPTR_L        = $B4  ; aux memory sprite data pointer (lo)
-ZP_AUXPTR_H        = $B5  ; (hi)
-ZP_TMPBYTE         = $B6  ; single-byte temp for read-then-write sequence
-ZP_BLIT_WIDTH      = $B7  ; sprite width in DHGR columns
-ZP_BLIT_HEIGHT     = $B8  ; sprite height in rows
+; NEW — confirmed unused in original (Story 2 additions)
+ZP_DHGR_ROW_L      = $B4  ; DHGR row pointer low byte (repurposed from ZP_UNUSEDB4)
+ZP_DHGR_ROW_H      = $B5  ; DHGR row pointer high byte (repurposed from ZP_UNUSEDB5)
+ZP_FILL_BYTE       = $B6  ; fill value for screenFill / stripe test
+ZP_STRIPE_IDX      = $B7  ; outer stripe counter (0..11) for stripeTest
+ZP_STRIPE_FILL     = $B8  ; stripe fill byte temp for stripeTest
 ```
 
 ---
@@ -219,6 +221,24 @@ enables scripted memory inspection for byte-level validation without manual inte
 - AN3 address: **`$C05E` works** on Jace (IIe standard). `$C07E` fallback not needed.
 - Uninitialized DHGR VRAM produces vertical color stripes (not HGR diagonal banding) — this
   is expected until `screenFill` is implemented in Story 2.
+
+### Story 2 findings
+- **DHGR row tables cannot be placed at $A100/$A200**: CHOPGFX loads at $A102 and would
+  overwrite them. Tables must be placed BEFORE $A102 or in a non-overlapping area.
+  SOLUTION: Tables placed in HICODE slack at $8E01 (dhgrRowLo) and $8EC1 (dhgrRowHi).
+  Both are within the $6000-$A0FF coverage of fileRead1 in the loader.
+- **ProDOS boot requires ~10M+ emulated cycles**: Jace validation must use `run 20000000`
+  minimum. Using `run 5000000` leaves the system still in ProDOS boot phase.
+- **`bootdisk` stops at ROM address $FA62**: The Jace `bootdisk` command stops as soon as
+  PC >= $2000, which matches the ROM reset vector at $FA62. The ProDOS loader runs AFTER
+  this. Always follow `bootdisk` with a large `run` count.
+- **screenFill confirmed working**: page 2 cleared to $00 ($4000=all zeros), page 1 also
+  initially cleared then overwritten by stripeTest.
+- **stripeTest confirmed working**: $2000=$77 (row 191 = stripe 11, fill $77 correct).
+  After `run 20000000`, game has overwritten page 1 with HGR blit data (expected — those
+  blitters not yet DHGR-aware).
+- **DHGR mode active**: game runs to title screen, DHGR screen shows graphical content.
+  The garbled appearance is expected — HGR blit functions are Story 4 work.
 
 ---
 

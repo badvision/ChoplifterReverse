@@ -176,7 +176,7 @@ fileRead1:
 	.byte 4
 	.byte 1					; File handle (we know it's gonna be 1)
 	.addr $6000
-	.word $4100				; Covers all code up to bottom of graphics area
+	.word $4100				; Covers all code up to bottom of graphics area ($A0FF)
 fileRead1Len:
 	.word 0					; Result (bytes read)
 

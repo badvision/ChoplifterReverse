@@ -1499,13 +1499,29 @@ initRendering:		; $1296
         sta     ZP_PALETTE
         sta     ZP_SPRITE_TILT_SIGN
         sta     ZP_SPRITE_TILT_OFFSET
-        sta     ZP_UNUSEDB4
-        sta     ZP_UNUSEDB5
+        sta     ZP_DHGR_ROW_L
+        sta     ZP_DHGR_ROW_H
         sta     ZP_SCREENBOTTOM			; Vertical scrolling no longer supported, so this is fixed at 0
         sta     ZP_LOCALSCROLL_L
         sta     ZP_LOCALSCROLL_H
         lda     #$C0
         sta     ZP_SCREENTOP			; Vertical scrolling no longer supported, so this is fixed at 192
+
+        ; Clear both DHGR pages to black at boot
+        LDA     #$00
+        JSR     screenFill              ; clear page 1 (ZP_PAGEMASK already $00)
+
+        LDA     #$60
+        STA     ZP_PAGEMASK
+        LDA     #$00
+        JSR     screenFill              ; clear page 2
+
+        LDA     #$00
+        STA     ZP_PAGEMASK             ; restore page 1
+
+        ; Draw 12-stripe test pattern to confirm dual-bank writes work
+        JSR     stripeTest
+
         pla
         rts
 
@@ -1609,12 +1625,123 @@ clearScreenStore:			; Loop through all of VRAM
         rts
 
 
-; Fills a block of the screen (full rows)
-; A = Fill value, X = Start row (0 is screen bottom), Y = End Row (191 is screen top)
-screenFill:		; $131b
-		rts
+; Fills all 192 rows of the current DHGR page with the value in A.
+; A = fill byte (bit 7 will be masked to 0 per DHGR requirement)
+; ZP_PAGEMASK selects page 1 ($00) or page 2 ($60)
+; Writes to both aux and main banks using RAMWRAUX/RAMWRMAIN soft switches.
+; Does NOT change RAMRD state — only RAMWR is toggled.
+; Preserves A, X, Y on exit.
+screenFill:
+        sta     ZP_FILL_BYTE            ; stash requested fill value
+        AND     #$7F                    ; enforce DHGR bit-7 rule
+        sta     ZP_FILL_BYTE            ; store masked fill byte
+
+        LDX     #191                    ; 192 rows, counting down (0..191)
+@sfRowLoop:
+        LDA     dhgrRowLo,X
+        STA     ZP_DHGR_ROW_L
+        LDA     dhgrRowHi,X
+        EOR     ZP_PAGEMASK             ; apply page 1/2 select
+        STA     ZP_DHGR_ROW_H
+
+        ; Write to aux bank (holds left nibbles of each DHGR pixel pair)
+        STA     $C005                   ; RAMWRAUX — value written is ignored
+        LDA     ZP_FILL_BYTE            ; reload fill byte after STA affected flags
+        LDY     #39
+@sfAuxLoop:
+        STA     (ZP_DHGR_ROW_L),Y
+        DEY
+        BPL     @sfAuxLoop
+
+        ; Write to main bank (holds right nibbles of each DHGR pixel pair)
+        STA     $C004                   ; RAMWRMAIN — value written is ignored
+        LDY     #39
+@sfMainLoop:
+        STA     (ZP_DHGR_ROW_L),Y
+        DEY
+        BPL     @sfMainLoop
+
+        DEX
+        BPL     @sfRowLoop
+        RTS
 
 
+; Lookup table: DHGR fill bytes for 12 stripes (indices 0..11, stripe 0=rows 0..15 bottom)
+; Colors: 0=black, 1=magenta, 2=darkblue, 3=purple, 4=darkgreen, 5=gray1,
+;         6=medblue, 5=gray1, 0=black, 1=magenta, 5=gray1, 15=white
+; Formula: (colorIndex | (colorIndex<<4)) & $7F
+stripeFillBytes:
+    .byte $00, $11, $22, $33, $44, $55, $66, $55, $00, $11, $55, $77
+
+; 12-stripe test pattern: fills each 16-row band with a distinct DHGR color byte.
+; Proves both aux and main banks are written (missing aux = half-column gaps in screenshot).
+; Stripe 0 = rows 0..15 (bottom), stripe 11 = rows 176..191 (top).
+; Register use:
+;   ZP_STRIPE_IDX ($B7) = outer stripe counter (11 down to 0)
+;   ZP_STRIPE_FILL ($B8) = fill byte for current stripe
+;   ZP_FILL_BYTE ($B6)   = row-within-stripe counter (15 down to 0)
+;   X = absolute row index (base_row + within_stripe_row)
+;   Y = byte-within-row counter (39 down to 0)
+; ZP_PAGEMASK selects page 1 or page 2 (set by caller).
+stripeTest:
+        LDA     #11
+        STA     ZP_STRIPE_IDX           ; outer stripe counter: 11 down to 0
+
+@stStripeLoop:
+        ; Load fill byte for this stripe
+        LDX     ZP_STRIPE_IDX
+        LDA     stripeFillBytes,X
+        AND     #$7F                    ; enforce DHGR bit-7 rule
+        STA     ZP_STRIPE_FILL
+
+        ; Start inner row loop at row 15 within this stripe
+        LDA     #15
+        STA     ZP_FILL_BYTE            ; row-within-stripe counter
+
+@stRowLoop:
+        ; Compute absolute row index = stripe_idx * 16 + within_stripe_row
+        LDA     ZP_STRIPE_IDX
+        ASL                             ; * 2
+        ASL                             ; * 4
+        ASL                             ; * 8
+        ASL                             ; * 16
+        CLC
+        ADC     ZP_FILL_BYTE            ; + row within stripe
+        TAX                             ; X = absolute row index (0..191)
+
+        LDA     dhgrRowLo,X
+        STA     ZP_DHGR_ROW_L
+        LDA     dhgrRowHi,X
+        EOR     ZP_PAGEMASK
+        STA     ZP_DHGR_ROW_H
+
+        ; Write fill to aux bank
+        STA     $C005                   ; RAMWRAUX (value irrelevant)
+        LDY     #39
+@stAuxLoop:
+        LDA     ZP_STRIPE_FILL
+        STA     (ZP_DHGR_ROW_L),Y
+        DEY
+        BPL     @stAuxLoop
+
+        ; Write fill to main bank
+        STA     $C004                   ; RAMWRMAIN (value irrelevant)
+        LDY     #39
+@stMainLoop:
+        LDA     ZP_STRIPE_FILL
+        STA     (ZP_DHGR_ROW_L),Y
+        DEY
+        BPL     @stMainLoop
+
+        ; Next row within stripe
+        DEC     ZP_FILL_BYTE
+        BPL     @stRowLoop              ; loop while ZP_FILL_BYTE >= 0
+
+        ; Next stripe
+        DEC     ZP_STRIPE_IDX
+        BPL     @stStripeLoop           ; loop while ZP_STRIPE_IDX >= 0
+
+        RTS
 
 ; Advances iterators to next row of the source image being copied to screen
 nextImageSrcRow:		; $133e
@@ -2299,19 +2426,19 @@ tiltRightDeadCode:						; An additional entry point piggybacked in
 
 tiltDeadCode:
 		lda     #$00	; Copies upper three bits from Y into bottom of B7, but
-        sta     ZP_UNUSEDB7	; I'm not clear what this is actually doing. Possibly a sort
+        sta     ZP_STRIPE_IDX	; I'm not clear what this is actually doing. Possibly a sort
         tya				; of scan-line conversion for sampling the sprite at an angle
         asl
-        rol     ZP_UNUSEDB7
+        rol     ZP_STRIPE_IDX
         asl
-        rol     ZP_UNUSEDB7
+        rol     ZP_STRIPE_IDX
         asl
-        rol     ZP_UNUSEDB7
+        rol     ZP_STRIPE_IDX
         sec
         sbc     tiltLeftDeadCodeByteIndex
-        sta     ZP_UNUSEDB6
+        sta     ZP_FILL_BYTE
         bcs     tiltDeadCodeCheckTilt
-        dec     ZP_UNUSEDB7
+        dec     ZP_STRIPE_IDX
 
 tiltDeadCodeCheckTilt:
 		bit     ZP_SPRITE_TILT
@@ -2340,28 +2467,28 @@ tiltDeadCodeTiltLeftFindHighBit:
 tiltDeadCodeTiltLeftGotBit:
 		clc
         tya
-        adc     ZP_UNUSEDB6
-        sta     ZP_UNUSEDB6
-        lda     ZP_UNUSEDB7
+        adc     ZP_FILL_BYTE
+        sta     ZP_FILL_BYTE
+        lda     ZP_STRIPE_IDX
         adc     #$00
-        sta     ZP_UNUSEDB7
+        sta     ZP_STRIPE_IDX
         lda     $BD
-        sta     ZP_UNUSEDB8
+        sta     ZP_STRIPE_FILL
         lda     #$80
         sta     $BA
         lda     #$B6
         sta     $BB
         clc
-        lda     ZP_UNUSEDB6
+        lda     ZP_FILL_BYTE
         adc     ZP_LOCALSCROLL_L
-        sta     ZP_UNUSEDB6
-        lda     ZP_UNUSEDB7
+        sta     ZP_FILL_BYTE
+        lda     ZP_STRIPE_IDX
         adc     ZP_LOCALSCROLL_H
-        sta     ZP_UNUSEDB7
+        sta     ZP_STRIPE_IDX
         sec
-        lda     ZP_UNUSEDB8
+        lda     ZP_STRIPE_FILL
         sbc     ZP_SCREENBOTTOM
-        sta     ZP_UNUSEDB8
+        sta     ZP_STRIPE_FILL
 
         lda     tiltLeftDeadCodePixels		; Restore registers
         ldy     tiltLeftDeadCodeByteIndex
@@ -8547,9 +8674,41 @@ alienEntityCache:		; $8e00	To save/restore entity ID
 
 .org $8e01
 
+; DHGR row address tables — 192 entries each, placed in the 511-byte HICODE slack area.
+; Low bytes: identical to hiResRowsLow (same HGR interleave formula applies to DHGR)
+; High bytes: identical to hiResRowsHigh (XOR ZP_PAGEMASK at runtime for page select)
+; Row 0 = screen bottom (game coordinate convention), Row 191 = screen top
+; These tables are within the fileRead1 coverage ($6000-$A0FF) and are not
+; overwritten by CHOPGFX (which loads at $A102).
+dhgrRowLo:
+    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
+    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
+    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
+    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
+    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
+    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
+    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
+    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
+    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
+    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
+    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
+    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
 
-; 511 unused bytes
-UNUSED 511
+dhgrRowHi:
+    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
+    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
+    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
+    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
+    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
+    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
+    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
+    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
+    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
+    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
+    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
+    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
+
+; Remaining slack (511 - 384 = 127 bytes)
 
 
 .org $9000		; Rendering-focused jump table
@@ -10872,14 +11031,8 @@ sortieGraphicsTable:	; $a0fa
 	.word 	$beb8		; Third Sortie				$a0fe
 
 
-.org $a100
-
-; 2 unused bytes
-.byte $00,$00
-
-
-.org $a102
-
-; Actual graphics data is loaded here
-; I assume graphics run from $a102 - $beff inclusive. It may be a little less, but this definitely
-; covers the memory region of the highest sprite struct, and it conveniently stops short of ProDOS.
+.org $A100
+; Sprite graphics data unchanged from original — still at $A102.
+; DHGR row tables have been placed in the HICODE slack area ($8E01+)
+; to avoid conflicting with CHOPGFX (which loads at $A102).
+.org $A102

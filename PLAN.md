@@ -12,10 +12,10 @@
 
 > Update this section at the start of each session. It is the primary session-resume signal.
 
-**Current story**: Story 0 — Repo Setup + Reference Binary
+**Current story**: Story 3 — Static Background Render
 **Status**: NOT STARTED
-**Last session**: (none)
-**Blocking issues**: None — first story in sequence
+**Last session**: 2026-03-27 (Story 2 completed)
+**Blocking issues**: None
 
 ---
 
@@ -26,6 +26,7 @@
 | Metric | Value | Story | Date |
 |--------|-------|-------|------|
 | Reference binary checksum | (capture in Story 0) | S0 | — |
+| Story 2 binary checksum | d66da169a5a98ba9bd5e8889c5a25987 | S2 | 2026-03-27 |
 | DHGR baseline cycles/frame | (capture in Story 6) | S6 | — |
 | DHGR baseline FPS | (compute in Story 6) | S6 | — |
 | Post-opt-7a cycles/frame | (capture in Story 7a) | S7 | — |
@@ -43,6 +44,17 @@ Stretch target: >= 25 FPS (40,875 cycles/frame maximum)
 ## Session Notes
 
 > Append one entry per session. Newest at top.
+
+### Session 2 — 2026-03-27
+- Story 2 completed: DHGR row tables, screenFill, stripeTest implemented and validated.
+- Key discovery: DHGR row tables at $A100/$A200 conflict with CHOPGFX load at $A102.
+  Tables relocated to HICODE slack area $8E01/$8EC1 (384 bytes within 511-byte slack).
+- Key discovery: ProDOS boot requires ~10M+ emulated cycles to complete disk I/O.
+  Jace boot validation must use `run 20000000` minimum, not `run 3000000`.
+- stripeTest verified: $2000=$77 (row 191, stripe 11 fill), page 2 cleared to $00.
+- DHGR mode active: screenshot shows graphical content (garbled title screen expected —
+  HGR blit functions not yet DHGR-aware, that is Story 4 work).
+- Story 2 CHOPLIFTER.po MD5: d66da169a5a98ba9bd5e8889c5a25987
 
 ### Session 1 — 2026-03-27
 - Requirements analysis and architecture design completed by prior agents.

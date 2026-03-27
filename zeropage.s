@@ -168,11 +168,11 @@ ZP_IMAGE_W_BYTES 		= $B1		; Width of current animating image, in bytes
 ZP_SPRITE_TILT_OFFSET	= $B2		; Offset amount for rendering tilted sprites
 ZP_SPRITE_TILT_SIGN		= $B3		; Offset direction for rendering tilted sprites. $ff or $01
 
-ZP_UNUSEDB4				= $B4		; Curiously this is initialized to $00 but then never used in the game
-ZP_UNUSEDB5				= $B5		; Curiously this is initialized to $00 but then never used in the game
-ZP_UNUSEDB6				= $B6		; A scratch value only used in dead code (an abandoned attempt to calculated sprite tilt)
-ZP_UNUSEDB7				= $B7		; A scratch value only used in dead code (an abandoned attempt to calculated sprite tilt)
-ZP_UNUSEDB8				= $B8		; A scratch value only used in dead code (an abandoned attempt to calculated sprite tilt)
+ZP_DHGR_ROW_L			= $B4		; DHGR row pointer low byte (repurposed from ZP_UNUSEDB4)
+ZP_DHGR_ROW_H			= $B5		; DHGR row pointer high byte (repurposed from ZP_UNUSEDB5)
+ZP_FILL_BYTE			= $B6		; fill value for screenFill / stripe test (repurposed from ZP_UNUSEDB6)
+ZP_STRIPE_IDX			= $B7		; outer stripe counter (0..11) for stripeTest (repurposed from ZP_UNUSEDB7)
+ZP_STRIPE_FILL			= $B8		; stripe fill byte temp for stripeTest (repurposed from ZP_UNUSEDB8)
 
 ZP_SPRITE_TILT			= $B9		; Sets tilt of rendered sprites $00 = left tilt, $ff = right tilt
 
