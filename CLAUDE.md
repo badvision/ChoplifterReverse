@@ -262,3 +262,12 @@ make clean        # clean build artifacts
 Binary output: CHOPLIFTER.po (146432 bytes, ProDOS disk image)
 Reference checksum: `976db862ffc405b4f1c83545edd8c2ed  CHOPLIFTER.po` (146,432 bytes)
 Note: use `make clean diskimage loader choplifter` — NOT `make all` (emulate target requires Xcode)
+
+### GitHub Auth
+
+Use the `badvision` account for all git push and PR operations:
+```bash
+gh auth switch --user badvision
+```
+The `brobert_adobe` enterprise account cannot fork public repos (EMU policy).
+The upstream remote points to `dwsJason/ChoplifterReverse`. Push to your own fork under `badvision`.
