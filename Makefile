@@ -15,6 +15,7 @@ VOLNAME=CHOPLIFTER
 IMG=DiskImageParts
 PGM=choplifter
 EXECNAME=CHOP.SYSTEM\#FF2000
+PROJECT_DIR ?= $(shell pwd)
 
 all: clean diskimage loader $(PGM) emulate
 
@@ -25,6 +26,8 @@ $(PGM): choplifter_sprites.inc
 	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOPGFX
 	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOPGFXHI
 	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOPAUX
+	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOPMAIN
+	cp $(VOLNAME).po $(VOLNAME)-DHGR.po
 	rm -f $(PGM).o
 
 diskimage:

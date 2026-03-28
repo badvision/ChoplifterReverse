@@ -196,3 +196,6 @@ ZP_SCREENTOP			= $C5		; Y value of the top of the scroll window. Always $c0 now,
 ZP_SCREENBOTTOM			= $C6		; Y value of the bottom of the scroll window. Always $00 now, but the game likely had vertical scrolling at one point
 ZP_LOCALSCROLL_L		= $C7		; A pointer to a scroll position used indirectly for some rendering (low byte). Always points to ZP_SCROLLPOS anyway.
 ZP_LOCALSCROLL_H		= $C8		; A pointer to a scroll position used indirectly for some rendering (high byte). Always points to ZP_SCROLLPOS anyway.
+
+ZP_MAIN_SPRITE_PTR_L	= $C9		; Story 8: MAIN sprite pixel data pointer (low byte)
+ZP_MAIN_SPRITE_PTR_H	= $CA		; Story 8: MAIN sprite pixel data pointer (high byte)

@@ -1,6 +1,6 @@
 MEMORY {
 	LORAM:	start = $0800, size = $1800, file = "CHOP0", fill = yes, fillval = $00;
-	HIRAM:	start = $6000, size = $6000, file = "CHOP1";
+	HIRAM:	start = $6000, size = $6000, file = "CHOP1", fill = yes, fillval = $00;
 }
 
 SEGMENTS {

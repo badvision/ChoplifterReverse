@@ -1469,6 +1469,7 @@ blitRectLoop:  						; Blit the pixels — DHGR dual-bank write
         sta     blitRectMainLoad+1      ; patch main odd-pixel value
 
         ldx     ZP_IMAGE_W
+        beq     blitRectRowDone         ; guard: ZP_IMAGE_W=0 → DEX wraps to $FF → infinite loop
         ldy     ZP_CURR_X_BYTE
         sty     ZP_FILL_BYTE            ; save starting column for main pass
         tya
@@ -1501,6 +1502,7 @@ blitRectAuxDone:
         ; Story 6: No CLI here. initRendering permanently sets SEI; CLI would re-enable IRQs,
         ; allowing the 80-col card VBL handler to reach the $C27D keyboard busy-wait.
         ldx     ZP_IMAGE_W
+        beq     blitRectRowDone         ; guard: ZP_IMAGE_W=0 → DEX wraps to $FF → infinite loop
         ldy     ZP_FILL_BYTE            ; restore starting column
         tya
         and     #$01
@@ -2665,20 +2667,20 @@ tiltLeftDeadCodeByteIndex:		; $19d7
 ; Story 5: DHGR true dual-bank sprite blit. Aux bank = lower nibble, main bank = upper nibble.
 ; Guard: if ZP_SPRITEANIM_PTR_H < $AB, returns immediately (old HGR data, not DHGR).
 ; Per-pixel transparency: $00 bytes are skipped (background shows through).
-blitImage:			; $19d8
-        sta     ZP_REGISTER_A           ; save registers
-        stx     ZP_REGISTER_X
-        sty     ZP_REGISTER_Y
-
+; Story 8: Common setup subroutine for blitImage and blitImageFlip.
+; Checks guard, reads header (W/H/aux_ptr/main_ptr), calls calcRowBitByte, inits row counter.
+; On return: ZP_IMAGE_W/H set, ZP_AUX_SPRITE_PTR_L/H set, ZP_MAIN_SPRITE_PTR_L/H set,
+;            ZP_RENDER_CURR_Y set, ZP_CURR_X_BYTE set.
+; Carry set = guard FAILED (skip render). Carry clear = proceed.
+blitImageCommonSetup:
         ; Guard: only render converted DHGR sprites ($AB1C+)
         lda     ZP_SPRITEANIM_PTR_H
         cmp     #$AB
-        bcs     blitImageGuardPass
-        jmp     blitImageDone           ; not a DHGR sprite -- skip render
-blitImageGuardPass:
-
-        ; parseImageHeader: ZP_PARAM_PTR = ZP_SPRITEANIM_PTR, reads W/H into
-        ; ZP_IMAGE_W/H, advances ZP_PARAM_PTR +2 (now points at byte 2 = aux_ptr_lo)
+        bcs     :+
+        sec                             ; carry set = fail
+        rts
+:
+        ; parseImageHeader: reads W/H, advances ZP_PARAM_PTR +2 (now points at byte 2)
         jsr     parseImageHeader
 
         ; Read aux_ptr from header bytes 2-3 → ZP_AUX_SPRITE_PTR_L/H
@@ -2689,12 +2691,41 @@ blitImageGuardPass:
         lda     (ZP_PARAM_PTR_L),y      ; byte 3 = aux_ptr_hi
         sta     ZP_AUX_SPRITE_PTR_H
 
+        ; Read main_ptr from header bytes 4-5 → ZP_MAIN_SPRITE_PTR_L/H
+        ; ZP_PARAM_PTR already advanced +2 past bytes 0-1 (W/H) by parseImageHeader.
+        ; Bytes 2-3 are aux_ptr (read above at y=0/1).
+        ; Bytes 4-5 are main_ptr — now at offsets y=2/3 relative to ZP_PARAM_PTR.
+        ldy     #2
+        lda     (ZP_PARAM_PTR_L),y      ; byte 4 = main_ptr_lo (offset 2 from ZP_PARAM_PTR)
+        sta     ZP_MAIN_SPRITE_PTR_L
+        ldy     #3
+        lda     (ZP_PARAM_PTR_L),y      ; byte 5 = main_ptr_hi (offset 3 from ZP_PARAM_PTR)
+        sta     ZP_MAIN_SPRITE_PTR_H
+
         ; Compute starting screen column byte
         jsr     calcRowBitByte          ; -> ZP_CURR_X_BYTE
 
-        ; Init row counter and save starting column
+        ; Init row counter
         lda     ZP_SCREEN_Y
         sta     ZP_RENDER_CURR_Y
+        clc                             ; carry clear = success
+        rts
+
+blitImage:
+        sta     ZP_REGISTER_A           ; save registers
+        stx     ZP_REGISTER_X
+        sty     ZP_REGISTER_Y
+
+        ; Story 8: defensive clean state — ensure RAMRDMAIN/RAMWRMAIN on entry
+        sta     $C002                   ; RAMRDMAIN
+        sta     $C004                   ; RAMWRMAIN
+
+        jsr     blitImageCommonSetup
+        bcs     blitImageDone           ; guard failed — skip render
+
+        lda     ZP_IMAGE_H
+        beq     blitImageDone           ; guard: H=0 → dec wraps to $FF → 256 extra rows
+
         lda     ZP_CURR_X_BYTE
         sta     ZP_FILL_BYTE            ; column save for each row restart
 
@@ -2713,37 +2744,35 @@ blitImageRowLoop:
         eor     ZP_PAGEMASK
         sta     ZP_DHGR_ROW_H
 
+        ; Story 8: Two-pass per-row rendering.
+        ; Pass 1: LC RAM routine at $D000 handles RAMRDAUX+RAMWRAUX+loop+teardown.
+        ; ZP_FILL_BYTE = starting screen column, ZP_AUX_SPRITE_PTR_L/H already set.
+blitImageRowPass:
+        bit     $C080                   ; Story 8 fix: re-assert LCRAM=ON + Bank 1 (Apple Bank 1 = our pass1RowPass). $C080=read-Bank1-no-write-enable.
+        ldy     ZP_FILL_BYTE            ; set up Y before JSR (pass1RowPass reads ZP_FILL_BYTE internally)
+        jsr     $D000                   ; pass1RowPass in LC RAM: AUX bank pass
+
+        ; Pass 2: default state (RAMRDMAIN + RAMWRMAIN — no bank switches)
+        ; Two indices: Y = screen column (ZP_FILL_BYTE..ZP_FILL_BYTE+W-1)
+        ;              X = sprite column (0..W-1) for compact sprite data access
         ldy     ZP_FILL_BYTE            ; Y = starting screen column
-        ldx     #0                      ; X = sprite column (0..width-1)
-
-blitImageColLoop:
-        ; X = sprite column, Y = screen column
-        sty     ZP_DRAWSCRATCH1         ; save screen column Y
-        stx     ZP_DRAWSCRATCH2         ; save sprite column X
+        ldx     #0                      ; X = sprite column 0
+blitImagePass2Loop:
+        sty     ZP_DRAWSCRATCH2         ; save screen col Y
         txa
-        tay                             ; Y = sprite column for AUX read
-        jsr     auxReadByte             ; X = AUX pixel byte; clobbers A
-        txa                             ; A = pixel byte (Z set for transparent check)
-        ldx     ZP_DRAWSCRATCH2         ; restore sprite column X
-        ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
-        beq     blitImageSkipPx         ; A==0: transparent pixel (Z set by txa above)
-        cpy     #40                     ; right-edge clamp: Y>=40 is off-screen right
-        bcs     blitImageSkipPx
-        and     #$7F                    ; enforce DHGR bit 7 = 0
-        sei                             ; block IRQ for dual-bank write
-        sta     $C005                   ; RAMWRAUX
-        sta     (ZP_DHGR_ROW_L),y      ; write aux DHGR bank
-        sta     $C004                   ; RAMWRMAIN
-        ; Story 6: No CLI here — SEI from initRendering is permanent.
-        sta     (ZP_DHGR_ROW_L),y      ; write main DHGR bank (same byte)
-
-blitImageSkipPx:
-        ldy     ZP_DRAWSCRATCH1         ; screen column
-        iny                             ; advance screen column
-        sty     ZP_DRAWSCRATCH1
-        inx                             ; advance sprite column (X = true sprite col)
-        cpx     ZP_IMAGE_W
-        bcc     blitImageColLoop
+        tay                             ; Y = sprite col X for MAIN data read
+        lda     (ZP_MAIN_SPRITE_PTR_L),y   ; read MAIN sprite byte at sprite col X
+        ldy     ZP_DRAWSCRATCH2         ; restore screen col Y
+        beq     blitImagePass2Skip          ; transparent ($00)
+        cpy     #40                         ; right-edge clamp
+        bcs     blitImagePass2Skip
+        and     #$7F                        ; enforce DHGR bit 7 = 0
+        sta     (ZP_DHGR_ROW_L),y          ; write MAIN DHGR bank at screen col Y
+blitImagePass2Skip:
+        iny                             ; screen col Y++
+        inx                             ; sprite col X++
+        cpx     ZP_IMAGE_W              ; exit when sprite width exhausted
+        bcc     blitImagePass2Loop
 
         ; Advance AUX sprite pointer to next row (+ ZP_IMAGE_W bytes)
         clc
@@ -2753,6 +2782,14 @@ blitImageSkipPx:
         bcc     :+
         inc     ZP_AUX_SPRITE_PTR_H
 :
+        ; Advance MAIN sprite pointer to next row (+ ZP_IMAGE_W bytes)
+        clc
+        lda     ZP_MAIN_SPRITE_PTR_L
+        adc     ZP_IMAGE_W
+        sta     ZP_MAIN_SPRITE_PTR_L
+        bcc     :+
+        inc     ZP_MAIN_SPRITE_PTR_H
+:
         ; Row bounds check — stop before wrapping below row 0
         lda     ZP_RENDER_CURR_Y
         beq     blitImageDone
@@ -2761,6 +2798,9 @@ blitImageSkipPx:
         bne     blitImageRowLoop
 
 blitImageDone:
+        ; Restore clean memory state (defensive — pass1RowPass should already do teardown)
+        sta     $C002                   ; RAMRDMAIN
+        sta     $C004                   ; RAMWRMAIN
         lda     ZP_REGISTER_A           ; restore registers
         ldx     ZP_REGISTER_X
         ldy     ZP_REGISTER_Y
@@ -2769,38 +2809,21 @@ blitImageDone:
 
 ; Blits a rectangular image flipped left/right with pixel alignment. The image was previously
 ; configured with a helper routine (such as setBlitPos, setAnimLoc, or clipToScroll)
-; Story 5: Same as blitImage but screen column Y starts at rightmost column and DECREMENTS.
-; Sprite data columns still read left-to-right (X increments 0..width-1).
-blitImageFlip:	; $1a5e
+; Story 8: Two-pass per-row — Pass 1 calls LC RAM flip routine at $D020, Pass 2 uses MAIN data.
+blitImageFlip:
         sta     ZP_REGISTER_A           ; save registers
         stx     ZP_REGISTER_X
         sty     ZP_REGISTER_Y
 
-        ; Guard: only render converted DHGR sprites ($AB1C+)
-        lda     ZP_SPRITEANIM_PTR_H
-        cmp     #$AB
-        bcs     blitImageFlipGuardPass
-        jmp     blitImageFlipDone       ; not a DHGR sprite -- skip render
-blitImageFlipGuardPass:
+        ; Story 8: defensive clean state — ensure RAMRDMAIN/RAMWRMAIN on entry
+        sta     $C002                   ; RAMRDMAIN
+        sta     $C004                   ; RAMWRMAIN
 
-        ; parseImageHeader: ZP_PARAM_PTR = ZP_SPRITEANIM_PTR, reads W/H,
-        ; advances ZP_PARAM_PTR +2 (now points at byte 2 = aux_ptr_lo)
-        jsr     parseImageHeader
+        jsr     blitImageCommonSetup
+        bcs     blitImageFlipDone       ; guard failed — skip render
 
-        ; Read aux_ptr from header bytes 2-3 → ZP_AUX_SPRITE_PTR_L/H
-        ldy     #0
-        lda     (ZP_PARAM_PTR_L),y      ; byte 2 = aux_ptr_lo
-        sta     ZP_AUX_SPRITE_PTR_L
-        ldy     #1
-        lda     (ZP_PARAM_PTR_L),y      ; byte 3 = aux_ptr_hi
-        sta     ZP_AUX_SPRITE_PTR_H
-
-        ; Compute starting screen column byte
-        jsr     calcRowBitByte          ; -> ZP_CURR_X_BYTE
-
-        ; Init row counter
-        lda     ZP_SCREEN_Y
-        sta     ZP_RENDER_CURR_Y
+        lda     ZP_IMAGE_H
+        beq     blitImageFlipDone       ; guard: H=0 → dec wraps to $FF → 256 extra rows
 
         ; Flip: starting screen column = ZP_CURR_X_BYTE + ZP_IMAGE_W - 1 (rightmost)
         clc
@@ -2824,37 +2847,37 @@ blitImageFlipRowLoop:
         eor     ZP_PAGEMASK
         sta     ZP_DHGR_ROW_H
 
-        ldy     ZP_FILL_BYTE            ; Y = starting screen column (rightmost)
+        ; Story 8: Two-pass per-row rendering (flip variant).
+        ; Pass 1: LC RAM routine at $D030 (pass1RowPassFlip) handles RAMRDAUX+RAMWRAUX.
+        ; $D030 chosen to avoid overlap with pass1RowPass ($D000-$D026, 39 bytes) + gap.
+        ; ZP_FILL_BYTE = rightmost screen column, ZP_AUX_SPRITE_PTR_L/H already set.
+blitImageFlipRowPass:
+        bit     $C080                   ; Story 8 fix: re-assert LCRAM=ON + Bank 1 (same fix as blitImageRowPass)
+        ldy     ZP_FILL_BYTE
+        jsr     $D030                   ; pass1RowPassFlip in LC RAM: AUX bank pass (flip)
+
+        ; Pass 2 (flip): Y decrements from rightmost screen col, X increments for sprite col.
+        ; Default state (RAMRDMAIN + RAMWRMAIN — no bank switches).
+        ldy     ZP_FILL_BYTE            ; Y = rightmost screen column
         ldx     #0                      ; X = sprite column (0..width-1, left-to-right)
-
-blitImageFlipColLoop:
-        ; X = sprite column (left-to-right), Y = screen column (right-to-left)
+blitImageFlipPass2Loop:
         sty     ZP_DRAWSCRATCH1         ; save screen column Y
-        stx     ZP_DRAWSCRATCH2         ; save sprite column X
         txa
-        tay                             ; Y = sprite column for AUX read
-        jsr     auxReadByte             ; X = AUX pixel byte; clobbers A
-        txa                             ; A = pixel byte (Z set for transparent check)
-        ldx     ZP_DRAWSCRATCH2         ; restore sprite column X
-        ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
-        beq     blitImageFlipSkipPx     ; A==0: transparent pixel (Z set by txa above)
-        cpy     #40                     ; right-edge clamp: Y>=40 is off-screen right
-        bcs     blitImageFlipSkipPx     ; also catches Y=$FF (left underflow after dey from 0)
-        and     #$7F                    ; enforce DHGR bit 7 = 0
-        sei                             ; block IRQ for dual-bank write
-        sta     $C005                   ; RAMWRAUX
-        sta     (ZP_DHGR_ROW_L),y      ; write aux DHGR bank
-        sta     $C004                   ; RAMWRMAIN
-        ; Story 6: No CLI here — SEI from initRendering is permanent.
-        sta     (ZP_DHGR_ROW_L),y      ; write main DHGR bank (same byte)
-
-blitImageFlipSkipPx:
-        ldy     ZP_DRAWSCRATCH1         ; screen column
-        dey                             ; decrement screen column (flip direction)
+        tay                             ; Y = sprite column for MAIN read
+        lda     (ZP_MAIN_SPRITE_PTR_L),y   ; read MAIN sprite byte
+        ldy     ZP_DRAWSCRATCH1             ; restore screen column Y
+        beq     blitImageFlipPass2Skip      ; transparent ($00)
+        cpy     #40                         ; right-edge clamp (also catches $FF left underflow)
+        bcs     blitImageFlipPass2Skip
+        and     #$7F                        ; enforce DHGR bit 7 = 0
+        sta     (ZP_DHGR_ROW_L),y          ; write MAIN DHGR bank
+blitImageFlipPass2Skip:
+        ldy     ZP_DRAWSCRATCH1             ; screen column
+        dey                                 ; decrement screen column (flip direction)
         sty     ZP_DRAWSCRATCH1
-        inx                             ; advance sprite column (left-to-right, X = true sprite col)
+        inx                                 ; advance sprite column
         cpx     ZP_IMAGE_W
-        bcc     blitImageFlipColLoop
+        bcc     blitImageFlipPass2Loop
 
         ; Advance AUX sprite pointer to next row (+ ZP_IMAGE_W bytes)
         clc
@@ -2864,6 +2887,14 @@ blitImageFlipSkipPx:
         bcc     :+
         inc     ZP_AUX_SPRITE_PTR_H
 :
+        ; Advance MAIN sprite pointer to next row (+ ZP_IMAGE_W bytes)
+        clc
+        lda     ZP_MAIN_SPRITE_PTR_L
+        adc     ZP_IMAGE_W
+        sta     ZP_MAIN_SPRITE_PTR_L
+        bcc     :+
+        inc     ZP_MAIN_SPRITE_PTR_H
+:
         ; Row bounds check — stop before wrapping below row 0
         lda     ZP_RENDER_CURR_Y
         beq     blitImageFlipDone
@@ -2872,6 +2903,9 @@ blitImageFlipSkipPx:
         bne     blitImageFlipRowLoop
 
 blitImageFlipDone:
+        ; Restore clean memory state
+        sta     $C002                   ; RAMRDMAIN
+        sta     $C004                   ; RAMWRMAIN
         lda     ZP_REGISTER_A           ; restore registers
         ldx     ZP_REGISTER_X
         ldy     ZP_REGISTER_Y
@@ -2895,14 +2929,17 @@ blitImageFlipDone:
 ; for example. However when flying head on, there is only one sprite and this tilt renderer is used.
 
 ; Renders a sprite tilted to the left. Preserves registers.
-; Story 7: renderTiltedSpriteLeft -- deferred to Story 7
+; Story 8: DHGR implementation — delegates to blitImage.
+; The tilt effect (scan-line horizontal shift per ZP_SPRITE_TILT_OFFSET rows) is not
+; reproduced in this implementation; the sprite renders at its configured screen position.
+; blitImage handles DHGR two-pass rendering and the guard ($AB+) check.
 renderTiltedSpriteLeft:			; $1af3
-		rts
+		jmp		blitImage
 
 ; Renders a sprite tilted to the right. Preserves registers.
-; Story 7: renderTiltedSpriteRight -- deferred to Story 7
+; Story 8: DHGR implementation — delegates to blitImage (same as left; tilt not reproduced).
 renderTiltedSpriteRight:
-		rts
+		jmp		blitImage
 
 
 
@@ -2950,26 +2987,10 @@ pixelMasksRight:	; $1d82  Right end of byte, decreasing
 pixelMasksLeft:		; $1d8a Left end of byte, decreasing
 	.byte	$00,$7e,$7c,$78,$70,$60,$40,$00
 
-; AUX memory pixel read trampoline (10 bytes).
-; Address is determined by natural assembly position — see choplifter.lst for actual address.
-; loader.s auxTrampolineBase must match the assembled address shown in choplifter.lst.
-; The loader copies these 10 bytes to AUX at the same address (auxReadByte)
-; via RAMWRAUX so that RAMRDAUX opcode fetches execute correctly.
-; Calling convention: Y = sprite column index (0..width-1),
-;   ZP_AUX_SPRITE_PTR_L/H = base address of current sprite row in AUX memory.
-; Returns: X = pixel byte from AUX[(ZP_AUX_SPRITE_PTR),Y].
-; Clobbers: A, X.  Preserves: Y.
-auxReadByte:
-    sta     $C003               ; RAMRDAUX (opcode $8D fetched from MAIN while RAMRDMAIN active)
-                                ; *** from here ALL reads including opcode fetches come from AUX ***
-    lda     (ZP_AUX_SPRITE_PTR_L),y   ; opcode $B1/$BA: AUX mirror must match MAIN here
-    tax                         ; opcode $AA: AUX mirror must match MAIN here
-    sta     $C002               ; RAMRDMAIN ($8D/$02/$C0 fetched from AUX mirror)
-    rts                         ; fetched from MAIN (RAMRDMAIN restored before this fetch)
-
-; Story 7c: dhgrRowLo/dhgrRowHi at fixed LOCODE addresses $1B00/$1C00.
-; Use .res to pad to exact page boundaries. $1B00-* fills from current PC to $1B00.
-        .res    $1B00 - *, $00      ; pad from current PC to $1B00
+; Story 7c: dhgrRowLo/dhgrRowHi originally at $1B00/$1C00; moved to $1C00/$1D00 in Story 8
+; QA fix to accommodate expanded blitImage/blitImageFlip two-index loop code.
+; All references use symbolic labels (dhgrRowLo, dhgrRowHi) so the address change is safe.
+        .res    $1C00 - *, $00      ; pad from current PC to $1C00
 dhgrRowLo:
     ; 192 bytes — DHGR row low bytes (same HGR interleave formula, Row 0=bottom, Row 191=top)
     .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
@@ -2985,7 +3006,7 @@ dhgrRowLo:
     .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
     .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
 
-        .res    $1C00 - *, $00      ; pad from current PC ($1BC0) to $1C00
+        .res    $1D00 - *, $00      ; pad from current PC to $1D00
 dhgrRowHi:
     ; 192 bytes — DHGR row high bytes (XOR ZP_PAGEMASK at runtime for page select)
     .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
@@ -3001,6 +3022,96 @@ dhgrRowHi:
     .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
     .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
 
+
+; Story 8: pass1RowPass and pass1RowPassFlip — dead code at LOCODE address.
+; NEVER CALLED at their assembled LOCODE address. The loader copies these bytes to
+; LC RAM ($D000 and $D020 respectively) where they execute after RAMRDAUX is set.
+; LC RAM opcode fetches are independent of RAMRDAUX (hardware-confirmed).
+; Both routines are position-independent.
+;
+; pass1RowPass: handles AUX pass (RAMRDAUX+RAMWRAUX) for one sprite row.
+; Entry: ZP_FILL_BYTE = starting screen column (Y register on entry to blitImageRowPass)
+;        ZP_AUX_SPRITE_PTR_L/H = AUX sprite row base address
+;        ZP_DHGR_ROW_L/H = DHGR row base address
+;        ZP_IMAGE_W = sprite width in bytes
+; Exits with RAMRDMAIN + RAMWRMAIN restored.
+pass1RowPass:
+    sta     $C003                           ; RAMRDAUX (CPU opcode fetches now from AUX for $0200-$BFFF)
+    sta     $C005                           ; RAMWRAUX (writes go to AUX)
+    ldy     ZP_FILL_BYTE                    ; Y = starting screen column
+    ldx     #0                              ; X = sprite column 0 (0..W-1)
+@pass1InnerLoop:
+    sty     ZP_DRAWSCRATCH2                 ; save screen col Y ($92 always in MAIN ZP)
+    txa
+    tay                                     ; Y = sprite col X for AUX data read
+    lda     (ZP_AUX_SPRITE_PTR_L),y        ; read AUX sprite byte at sprite column X
+    ldy     ZP_DRAWSCRATCH2                 ; restore screen col Y
+    beq     @pass1SkipPx                    ; transparent ($00) — skip
+    cpy     #40                             ; right-edge clamp
+    bcs     @pass1SkipPx
+    sta     (ZP_DHGR_ROW_L),y              ; write AUX DHGR bank at screen column Y
+@pass1SkipPx:
+    iny                                     ; screen col Y++
+    inx                                     ; sprite col X++
+    cpx     ZP_IMAGE_W                      ; end of row? (X exhausted sprite width)
+    bcc     @pass1InnerLoop
+    sta     $C002                           ; RAMRDMAIN teardown
+    sta     $C004                           ; RAMWRMAIN teardown
+    rts
+pass1RowPassEnd:
+pass1RowLen = pass1RowPassEnd - pass1RowPass
+
+; pass1RowPassFlip: flip variant (screen column Y decrements, sprite col X increments).
+; Entry: ZP_FILL_BYTE = rightmost screen column (rightmost column for the row)
+;        ZP_AUX_SPRITE_PTR_L/H = AUX sprite row base address
+;        ZP_DHGR_ROW_L/H = DHGR row base address
+;        ZP_IMAGE_W = sprite width in bytes
+; Exits with RAMRDMAIN + RAMWRMAIN restored.
+pass1RowPassFlip:
+    sta     $C003                           ; RAMRDAUX
+    sta     $C005                           ; RAMWRAUX
+    ldy     ZP_FILL_BYTE                    ; Y = rightmost screen column
+    ldx     #0                              ; X = sprite column 0
+@pass1FlipLoop:
+    sty     ZP_DRAWSCRATCH1                 ; save screen col Y
+    txa
+    tay                                     ; Y = sprite col X for AUX read
+    lda     (ZP_AUX_SPRITE_PTR_L),y        ; read AUX sprite byte
+    ldy     ZP_DRAWSCRATCH1                 ; restore screen col Y
+    beq     @pass1FlipSkip
+    cpy     #40                             ; right-edge clamp (also catches $FF wraparound)
+    bcs     @pass1FlipSkip
+    sta     (ZP_DHGR_ROW_L),y              ; write AUX DHGR bank
+@pass1FlipSkip:
+    dey                                     ; screen col Y--
+    inx                                     ; sprite col X++
+    cpx     ZP_IMAGE_W
+    bcc     @pass1FlipLoop
+    sta     $C002                           ; RAMRDMAIN teardown
+    sta     $C004                           ; RAMWRMAIN teardown
+    rts
+pass1RowPassFlipEnd:
+pass1RowFlipLen = pass1RowPassFlipEnd - pass1RowPassFlip
+
+; AUX memory pixel read trampoline (10 bytes).
+; Story 8: Relocated after pass1 code blocks to make room for blitImageFlip two-pass code.
+; Address is determined by natural assembly position — see choplifter.lst for actual address.
+; loader.s auxTrampolineBase must match the assembled address shown in choplifter.lst.
+; The loader copies these 10 bytes to AUX at the same address (auxReadByte)
+; via RAMWRAUX so that RAMRDAUX opcode fetches execute correctly.
+; Story 8: auxReadByte is no longer called at runtime — blitImage/blitImageFlip use LC RAM.
+; Kept per architecture spec: auxReadByte trampoline mirror must be preserved.
+; Calling convention: Y = sprite column index (0..width-1),
+;   ZP_AUX_SPRITE_PTR_L/H = base address of current sprite row in AUX memory.
+; Returns: X = pixel byte from AUX[(ZP_AUX_SPRITE_PTR),Y].
+; Clobbers: A, X.  Preserves: Y.
+auxReadByte:
+    sta     $C003               ; RAMRDAUX (opcode $8D fetched from MAIN while RAMRDMAIN active)
+                                ; *** from here ALL reads including opcode fetches come from AUX ***
+    lda     (ZP_AUX_SPRITE_PTR_L),y   ; opcode $B1/$BA: AUX mirror must match MAIN here
+    tax                         ; opcode $AA: AUX mirror must match MAIN here
+    sta     $C002               ; RAMRDMAIN ($8D/$02/$C0 fetched from AUX mirror)
+    rts                         ; fetched from MAIN (RAMRDMAIN restored before this fetch)
 
 ; Skip over high res pages
 ;UNUSED 16384
@@ -12049,14 +12160,12 @@ initHelicopter:			; $9f18
         lda     #$00					; Start with no hostages onboard
         sta     CHOP_LOADED
         rts
-.org $9f79
 
-
-; 135 unused bytes from $9f79 to $a000
-UNUSED 135
-
-
-.org $a000
+; Story 8: Removed .org $9f79 / UNUSED 135 / .org $a000 padding.
+; HICODE code now extends past $9f79, so the .org $a000 was placing the sprite tables
+; at virtual $a000 but physical $aa1c — causing all blitImage guard checks ($AB) to fail
+; (table pointer high byte was wrong), and no sprites rendered via the two-pass path.
+; Labels now resolve to their actual assembled addresses; all references use symbolic labels.
 
 ; Below are all the master tables of pointers to sprites.
 ; Each sprite pointer is to a structure that is used by all rendering routines:
@@ -12067,7 +12176,7 @@ UNUSED 135
 
 ; A list of the sprites needed for all sideways chopper angles.
 ; Same sprites are used for facing left and right, with renderer handling X-flip
-chopperSideSpriteTable:		; $a000
+chopperSideSpriteTable:		; Story 8: actual address determined by linker (no longer forced to $a000)
 	.word	dhgrSpriteAddr_000		; -5 Full tilt forward, nose down
 	.word	dhgrSpriteAddr_001
 	.word	dhgrSpriteAddr_002
@@ -12282,10 +12391,12 @@ sortieGraphicsTable:	; $a0fa
 	.word	dhgrSpriteAddr_127		; Third Sortie				$a0fe
 
 
-.org $A100
+; Story 8: Removed .org $A100 here. It was a backward .org (code is past $AA95 now),
+; causing the linker to place a conflicting absolute section that corrupted the sprite headers.
+; Without .org $A100, the inc file's .org $AB1C fills $AA95-$AB1B with zeros and
+; places sprite headers at $AB1C (correct).
 ; Sprite graphics data unchanged from original — still at $A102.
-; DHGR row tables have been placed in the HICODE slack area ($8E01+)
-; to avoid conflicting with CHOPGFX (which loads at $A102).
+; DHGR row tables have been placed in the LOCODE area ($1B00/$1C00) to avoid CHOPGFX conflict.
 ; Story 4: DHGR sprite data begins at $AB1C (immediately after CHOP1 ends at $AB1B).
 ; Story 5: Full 128-sprite DHGR header block + address equates, generated by convert_sprites.py
 .include "choplifter_sprites.inc"

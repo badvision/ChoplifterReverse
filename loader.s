@@ -18,13 +18,17 @@ main:
 	jsr PRODOS
 	.byte $c8
 	.addr fileOpenCode0
-	bne ioError
+	beq :+
+	brk
+:
 
 	; Load low code at $800
 	jsr PRODOS
 	.byte $ca
 	.addr fileRead0
-	bne ioError
+	beq :+
+	brk
+:
 	
 	; Close the file
 	jsr PRODOS
@@ -35,13 +39,17 @@ main:
 	jsr PRODOS
 	.byte $c8
 	.addr fileOpenCode1
-	bne ioError
+	beq :+
+	brk
+:
 
 	; Load high code at $6000
 	jsr PRODOS
 	.byte $ca
 	.addr fileRead1
-	bne ioError
+	beq :+
+	brk
+:
 
 	; Close the file
 	jsr PRODOS
@@ -58,13 +66,17 @@ main:
 	jsr PRODOS
 	.byte $c8
 	.addr fileOpenAux
-	bne ioError
+	beq :+
+	brk
+:
 
 	; Step 2: Read CHOPAUX into main $4400 (above 1KB OPEN I/O buffer at $4000-$43FF)
 	jsr PRODOS
 	.byte $ca
 	.addr fileReadAux
-	bne ioError
+	beq :+
+	brk
+:
 
 	; Step 3: Close file
 	jsr PRODOS
@@ -120,9 +132,109 @@ chopAuxCopyDone:
 	sta $C004				; RAMWRMAIN — restore writes to main
 	cli
 
+	; ---- Story 8: Load CHOPMAIN to main memory staging buffer ----
+	; Reuse $4400 staging buffer (CHOPAUX already copied to AUX $6100, buffer is free).
+	; Note: $4400 + $14DB = $58DB < $6000 — does not overlap HICODE.
+	jsr PRODOS
+	.byte $c8
+	.addr fileOpenMain
+	beq :+
+	brk
+:
+
+	jsr PRODOS
+	.byte $ca
+	.addr fileReadMain
+	beq :+
+	brk
+:
+
+	jsr PRODOS
+	.byte $cc
+	.addr fileClose
+
+	; ---- Story 8: LC write-enable (double read of $C083) ----
+	; $C083 = LC Bank 2 read+write enable (requires two consecutive reads).
+	; $C080/$C084 = read-only — does NOT enable writes. Must use $C083/$C087.
+	; After two reads of $C083: $D000-$FFFF reads from LC Bank 2, writes to LC Bank 2.
+	lda $C083				; LC Bank 2 read+write enable, first strobe
+	lda $C083				; LC Bank 2 read+write enable, second strobe (write now active)
+
+	; ---- Story 8: Copy pass1RowPass to LC RAM $D000 ----
+	; pass1RowPass address and length from choplifter.lst: $1DC0, len=$27 (39 bytes)
+	; Update these constants if LOCODE code before pass1RowPass changes.
+	; Story 8 QA: dhgrRowLo/Hi moved to $1C00/$1D00; pass1RowPass now at $1DC0 (39 bytes).
+pass1RowPassBase   = $1DC0		; verify in choplifter.lst
+pass1RowPassLen    = $27		; 39 bytes — verify in choplifter.lst
+	ldx #0
+@copyPass1:
+	lda pass1RowPassBase,x
+	sta $D000,x
+	inx
+	cpx #pass1RowPassLen
+	bne @copyPass1
+
+	; ---- Story 8: Copy pass1RowPassFlip to LC RAM $D030 ----
+	; $D030 chosen to avoid overlap with pass1RowPass ($D000-$D026, 39 bytes).
+	; pass1RowPassFlip address and length from choplifter.lst: $1DE7, len=$27 (39 bytes)
+	; Story 8 QA: flip moved from $D020 to $D030 to prevent code overlap.
+pass1RowPassFlipBase = $1DE7	; verify in choplifter.lst
+pass1RowPassFlipLen  = $27		; 39 bytes — verify in choplifter.lst
+	ldx #0
+@copyPass1Flip:
+	lda pass1RowPassFlipBase,x
+	sta $D030,x
+	inx
+	cpx #pass1RowPassFlipLen
+	bne @copyPass1Flip
+
+	; ---- Story 8: Copy CHOPMAIN from $4400 to LC RAM $D060 ----
+	; $D060 avoids overlap with pass1RowPassFlip ($D030-$D056, 39 bytes).
+	; $D060 + $14DB = $E53B — fits within LC RAM ($D000-$FFFF).
+	; Source pointer in ZP $90/$91, dest pointer in ZP $92/$93 (loader scratch).
+	lda #$00
+	sta $90					; source lo = $00
+	lda #$44
+	sta $91					; source hi = $44 => source = $4400
+	lda #$60
+	sta $92					; dest lo = $60
+	lda #$D0
+	sta $93					; dest hi = $D0 => dest = $D060
+
+	; Copy chopMainLen bytes (same page-based loop as CHOPAUX copy)
+	ldx #>chopMainLen		; X = number of full pages
+
+@chopMainCopyPageLoop:
+	ldy #0
+@chopMainCopyByteLoop:
+	lda ($90),y
+	sta ($92),y
+	iny
+	bne @chopMainCopyByteLoop
+
+	inc $91
+	inc $93
+	dex
+	bne @chopMainCopyPageLoop
+
+	; Partial final page
+	ldy #0
+	ldx #<chopMainLen
+	beq @chopMainCopyDone
+
+@chopMainCopyRemLoop:
+	lda ($90),y
+	sta ($92),y
+	iny
+	dex
+	bne @chopMainCopyRemLoop
+
+@chopMainCopyDone:
+
 	jmp initVectors
 
-chopAuxLen = $14DB			; CHOPAUX = 5339 bytes
+chopAuxLen  = $14DB			; CHOPAUX = 5339 bytes
+chopMainLen = $14DB			; CHOPMAIN = 5339 bytes (same pixel data, main bank)
 
 ioError:
 	brk
@@ -184,7 +296,7 @@ initVectors:
 	; Update this constant whenever LOCODE code before auxReadByte is added/removed.
 	; Verify by checking choplifter.lst for the assembled address of auxReadByte.
 	; RAMWRAUX: writes go to AUX, reads still come from MAIN — safe for this copy loop.
-auxTrampolineBase = $1AE8	; auxReadByte natural position — verify in choplifter.lst
+auxTrampolineBase = $1E0E	; auxReadByte natural position — verified in choplifter.lst (Story 8 QA: $1E0E after table relocation)
 
 auxTrampolineLen  = 10
 	ldy		#auxTrampolineLen - 1
@@ -279,6 +391,21 @@ fileReadAux:
 fileReadAuxLen:
 	.word 0					; Result (bytes read)
 
+fileOpenMain:
+	.byte 3
+	.addr mainPath
+	.addr LOADBUFFER
+	.byte 0					; Result (file handle)
+	.byte 0					; Padding
+
+fileReadMain:
+	.byte 4
+	.byte 1					; File handle (we know it's gonna be 1)
+	.addr $4400				; Reuse $4400 staging buffer (CHOPAUX already copied to AUX)
+	.word $14DB				; chopMainLen = 5339 bytes
+fileReadMainLen:
+	.word 0					; Result (bytes read)
+
 fileClose:
 	.byte 1
 	.byte 1					; File handle (we know it's gonna be 1)
@@ -299,3 +426,5 @@ gfxPathHi:
 	pstring "/CHOPLIFTER/CHOPGFXHI"
 auxPath:
 	pstring "/CHOPLIFTER/CHOPAUX"
+mainPath:
+	pstring "/CHOPLIFTER/CHOPMAIN"
