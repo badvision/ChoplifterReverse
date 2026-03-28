@@ -2969,8 +2969,45 @@ auxReadByte:
     sta     $C002               ; RAMRDMAIN ($8D/$02/$C0 fetched from AUX mirror)
     rts                         ; fetched from MAIN (RAMRDMAIN restored before this fetch)
 
-; 612 unused bytes until bottom of HGR page 0 at $2000  (was 622, minus 10 for trampoline)
-UNUSED 612
+; Story 7c: dhgrRowLo/dhgrRowHi relocated from HICODE $8E01/$8EC1 to page-aligned LOCODE addresses.
+; auxReadByte ends at $1AF2. Pad 14 bytes to reach $1B00 (page boundary).
+        .res    14, $00             ; pad to page boundary $1B00
+
+dhgrRowLo:
+    ; 192 bytes — DHGR row low bytes (same HGR interleave formula, Row 0=bottom, Row 191=top)
+    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
+    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
+    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
+    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
+    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
+    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
+    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
+    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
+    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
+    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
+    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
+    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
+
+; dhgrRowLo ends at $1BC0. Pad 64 bytes to reach $1C00 (page boundary).
+        .res    64, $00             ; pad to page boundary $1C00
+
+dhgrRowHi:
+    ; 192 bytes — DHGR row high bytes (XOR ZP_PAGEMASK at runtime for page select)
+    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
+    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
+    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
+    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
+    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
+    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
+    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
+    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
+    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
+    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
+    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
+    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
+
+; dhgrRowHi ends at $1CC0. Remaining 832 unused bytes to end of LOCODE ($2000).
+        .res    832, $00
 
 
 ; Skip over high res pages
@@ -9060,39 +9097,10 @@ alienEntityCache:		; $8e00	To save/restore entity ID
 
 .org $8e01
 
-; DHGR row address tables — 192 entries each, placed in the 511-byte HICODE slack area.
-; Low bytes: identical to hiResRowsLow (same HGR interleave formula applies to DHGR)
-; High bytes: identical to hiResRowsHigh (XOR ZP_PAGEMASK at runtime for page select)
-; Row 0 = screen bottom (game coordinate convention), Row 191 = screen top
-; These tables are within the fileRead1 coverage ($6000-$A0FF) and are not
-; overwritten by CHOPGFX (which loads at $A102).
-dhgrRowLo:
-    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
-    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
-    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
-    .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
-    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
-    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
-    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
-    .byte $A8,$A8,$A8,$A8,$A8,$A8,$A8,$A8,$28,$28,$28,$28,$28,$28,$28,$28
-    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
-    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
-    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
-    .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
-
-dhgrRowHi:
-    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
-    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
-    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
-    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
-    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
-    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
-    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
-    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
-    .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
-    .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
-    .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
-    .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
+; Story 7c: dhgrRowLo/dhgrRowHi relocated to LOCODE $1B00/$1C00 (page-aligned).
+; This area is now zeros — labels dhgrRowLo and dhgrRowHi resolve to $1B00/$1C00.
+; The old HICODE slack location is freed for future unrolling.
+        .res    384, $00            ; was dhgrRowLo (192 bytes) + dhgrRowHi (192 bytes)
 
 ; Remaining slack (511 - 384 = 127 bytes)
         .res    127,$00             ; pad to $9000
