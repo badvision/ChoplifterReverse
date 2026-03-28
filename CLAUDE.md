@@ -162,6 +162,41 @@ Run via `make sprites`. Also produces PNG preview for visual validation.
 
 **This is your primary validation tool. Every story requires visual validation via Jace.**
 
+### ⚠️ MANDATORY SCREENSHOT PROTOCOL — NO EXCEPTIONS ⚠️
+
+**DO NOT describe a screenshot without first reading it with the Read tool.**
+Fabricating or guessing screenshot contents has caused multiple stories to be falsely
+certified complete while the game rendered garbage. This is a project-level failure mode.
+
+**Required steps for every screenshot validation:**
+1. Capture the screenshot: `screenshot /tmp/jace_<story>.png`
+2. **Read it**: `Read /tmp/jace_<story>.png` — use the Read tool, view the actual image
+3. **Describe exactly what you see** — specific shapes, colors, positions
+4. **Compare to the pass/fail criteria below** — if it fails, it fails; do not rationalize garbage
+
+**Automatic FAIL — these mean the game is broken:**
+- Vertical color stripes (orange/cyan/green bars) filling the screen or bottom area
+- A white solid fill in the top area where the HUD should be
+- ProDOS boot screen ("Apple II / ProDOS 8 V2.4.1") — game never loaded
+- Completely black screen — game crashed or didn't start
+- Horizontal scan-line noise across the full screen
+- File size < 8KB for a 1120×384 screenshot — almost always indicates sparse/garbage content
+
+**What PASSING gameplay looks like (reference: original Choplifter in DHGR):**
+- TOP: A colored HUD bar (green/orange/brown) with oval score displays and numbers
+- MIDDLE: Black or near-black sky area occupying majority of the screen
+- STARS: Small single-pixel colored dots (white/red/green/blue) scattered across the sky
+- HELICOPTER: A recognizable multi-part sprite shape (not just a small oval or blob)
+- TERRAIN: A ground/landscape along the bottom — irregular silhouette, NOT vertical bars
+- COLORS: NTSC color fringing on sprites is expected and correct in DHGR mode
+- NO: vertical color bar columns spanning full or partial screen height
+
+**During development (before full rendering conversion), the minimum acceptable bar is:**
+- No ProDOS boot screen (game loaded and is running)
+- Sky region is predominantly black
+- At least one sprite is visible as a recognizable shape (not just a blob)
+- No regression from the previous story's screenshot (compare explicitly)
+
 ### One mode: Maven terminal (everything — checks, memory, AND screenshots)
 
 The standalone binary (`/Users/brobert/Downloads/Jace`) does NOT support terminal/scripting mode.
@@ -178,7 +213,7 @@ C07F
 b
 qq
 EOF
-# Then: Read /tmp/jace_frame.png for multimodal review
+# Then MANDATORY: Read /tmp/jace_frame.png with the Read tool and describe what you actually see
 ```
 
 **Always pass `7` as the slot argument** — slot 7 = SmartPort = instant disk reads.
@@ -201,10 +236,11 @@ Slot 6 (default) = spinning Disk ][ emulation = ~600 real seconds to boot.
 ```
 run 5000000
 m
-7000.7001
+68E5.68E6
 b
 ```
-FPS = 1,021,875 / [16-bit value at $7000]
+FPS = frame_delta × 1,021,875 / cycle_delta  (take two readings 5M cycles apart)
+⚠️ $7000 is BOUNDS_LEFT game constant — NOT the FPS counter. Use $68E5/$68E6.
 
 ### Why Jace is essential:
 Jace is a cycle-accurate Apple IIe emulator in Java. It correctly emulates DHGR color mode,
