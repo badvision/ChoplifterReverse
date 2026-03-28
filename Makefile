@@ -18,12 +18,13 @@ EXECNAME=CHOP.SYSTEM\#FF2000
 
 all: clean diskimage loader $(PGM) emulate
 
-$(PGM):
+$(PGM): choplifter_sprites.inc
 	@PATH=$(PATH):/usr/local/bin; $(CL65) -C linkerConfig -t apple2 --start-addr $(ADDR) -l$(PGM).lst $(PGM).s
 	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOP0
 	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOP1
 	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOPGFX
 	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOPGFXHI
+	$(CAD) ADDFILE $(VOLNAME).po /$(VOLNAME) CHOPAUX
 	rm -f $(PGM).o
 
 diskimage:

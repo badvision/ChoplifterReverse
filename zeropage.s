@@ -136,6 +136,7 @@ ZP_IMAGE_H				= $8F		; Height of current rendering image, in pixels
 
 ZP_DRAWSCRATCH0			= $90		; Used as a scratch in various drawing routines
 ZP_DRAWSCRATCH1			= $91		; Used as a scratch in various drawing routines
+ZP_DRAWSCRATCH2			= $92		; Used as a scratch in blitImage/blitImageFlip sprite column save
 ZP_DRAWEND				= $93		; Used as end point for rendering rows or bytes in various routines
 ZP_BITSCRATCH			= $94		; Scratch value for bit masks in rendering routines
 ZP_PARAM_PTR_L 			= $95		; Pointer to inline params (low byte)
@@ -176,8 +177,8 @@ ZP_STRIPE_FILL			= $B8		; stripe fill byte temp for stripeTest (repurposed from 
 
 ZP_SPRITE_TILT			= $B9		; Sets tilt of rendered sprites $00 = left tilt, $ff = right tilt
 
-ZP_UNUSEDBA				= $BA		; A tilt parameter for sprite rendering that ended up being unused in the end
-ZP_REGISTER				= $BB		; A scratch value used to save and restore random registers in a couple of places
+ZP_AUX_SPRITE_PTR_L		= $BA		; DHGR aux sprite pixel data pointer (low byte)
+ZP_AUX_SPRITE_PTR_H		= $BB		; DHGR aux sprite pixel data pointer (high byte)
 
 ZP_CURRTILT_OFFSET		= $BC		; Current offset during tilted sprite rendering
 ZP_RENDER_CURR_Y		= $BD		; Current Y-position while rendering (bottom relative)

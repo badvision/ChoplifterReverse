@@ -294,6 +294,40 @@ enables scripted memory inspection for byte-level validation without manual inte
   replaced with true dual-bank color data: aux bank receives lower nibble, main bank
   receives upper nibble of each DHGR 4bpp color pair.
 
+### Story 5 findings
+- **RAMRDAUX crash in HICODE**: `STA $C003` (RAMRDAUX) inside HICODE ($6000+) crashes
+  because AUX memory at those addresses holds sprite data or zeros — not valid opcodes.
+  After RAMRDAUX, the CPU fetches the next instruction from AUX, gets garbage, and hits
+  BRK. Solution: never place RAMRDAUX-using code in HICODE; see trampoline below.
+- **auxReadByte trampoline ($1AA7, 10 bytes in LOCODE)**: Safe RAMRDAUX read from AUX sprite
+  data via a 10-byte stub placed at $1AA7 in LOCODE (within CHOP0 = $0800–$1FFF).
+  Bytes: `8D 03 C0 B1 BA AA 8D 02 C0 60` = STA $C003 / LDA (ZP_AUX_SPRITE_PTR_L),Y /
+  TAX / STA $C002 / RTS. The loader mirrors these 10 bytes to AUX $1AA7 via RAMWRAUX
+  before jumping to $0300. With AUX $1AA7 containing the same opcodes as MAIN, RAMRDAUX
+  opcode fetches execute the correct code. Returns: X = AUX pixel byte. Clobbers: A, X.
+  Preserves: Y. ZP_AUX_SPRITE_PTR_L/H ($BA/$BB) must be set to the AUX row base address.
+- **emit_inc() headers-only architecture**: `choplifter_sprites.inc` contains only the
+  4-byte sprite headers (W, H, aux_ptr_lo, aux_ptr_hi) at $AB1C — total 512 bytes for
+  128 sprites. Pixel data lives ONLY in CHOPAUX (AUX file loaded to AUX $6100 by loader).
+  Adding pixel bytes to the inc causes HIRAM overflow (5339 bytes > 512-byte budget at $AB1C).
+- **ca65 .org in relocatable segment**: `.org` sets label addresses to the specified value
+  but does NOT insert filler bytes. Data lands at the natural code position in the binary.
+  Using `.org $1D92` to place trampoline caused JSR to call the wrong address ($1D92 label,
+  but bytes landed at $1AA7). Fix: remove `.org`, place code at its natural LOCODE position,
+  use `auxTrampolineBase = <actual address>` constant in loader.s.
+- **Sprite header format at $AB1C**: `.byte W, H, aux_ptr_lo, aux_ptr_hi` (4 bytes per
+  sprite, no pixel data in MAIN). blitImage reads aux_ptr from bytes 2–3 and stores in
+  ZP_AUX_SPRITE_PTR_L/H ($BA/$BB) before calling auxReadByte for each pixel.
+- **CHOPAUX size**: 5339 bytes ($14DB). Loaded by loader to AUX $4400 (avoids 1KB I/O
+  buffer at $4000–$43FF), then copied page-by-page to AUX $6100 via RAMWRAUX loop.
+  chopAuxLen = $14DB must match both loader.s constant and fileReadAux parameter.
+- **AUX ZP_AUX_SPRITE_PTR_L/H = $BA/$BB**: Used as the base pointer for auxReadByte.
+  blitImage advances this pointer by ZP_IMAGE_W after each row to step through sprite data.
+- **Jace terminal screenshot limitation**: In headless mode, `screenshot` captures the text
+  framebuffer, not the DHGR graphics framebuffer. VRAM content must be verified via `m`
+  memory dumps (DHGR VRAM $2000+ showed terrain pattern `51 4A 51 4A...` confirming active
+  rendering). Visual DHGR screenshots require Jace GUI mode.
+
 ---
 
 ## Conversion Roadmap
@@ -306,8 +340,8 @@ Story 0  Repo setup, reference build, CLAUDE.md + PLAN.md  [DONE — bb024d3..3d
 Story 1  DHGR mode init (blank screen, correct soft switches)  [DONE — bb024d3]
 Story 2  Row tables + dual-bank write infrastructure (12-stripe test)  [DONE — 2026-03-27]
 Story 3  Static background: sky, stars, terrain, moon, houses  [DONE — 2026-03-27]
-Story 4  blitImage ported — single sprite (helicopter head-on only)
-Story 5  All 9 blit functions + full sprite data conversion (1bpp → 4bpp)
+Story 4  blitImage ported — single sprite (helicopter head-on only)  [DONE — 2026-03-27]
+Story 5  All sprites converted, auxReadByte trampoline, CHOPAUX pipeline  [DONE — 2026-03-27]
 Story 6  FPS benchmark baseline recorded at $7000/$7001
 Story 7  Three optimizations: byte-aligned sprites → fix erase pass → hot data locality
 Story 8  Integration regression: title, sortie, gameplay, game-over; final FPS >= 20
@@ -327,8 +361,8 @@ FPS formula: 1,021,875 / [cycles_per_frame at $7000/$7001 as 16-bit little-endia
 | DHGR color phase encoding accuracy | 2, 7 | Validate stripe test screenshot empirically |
 | Non-rendering game cycle cost unknown | 6 | Story 6 measures; if >15K cycles adjust Story 7 targets |
 | renderMoon: 50+ hard-coded HGR addresses | 3 | Handle individually; highest-risk function in Story 3 |
-| Aux memory sprite data too large for AUX $6100–$BEFF | 5 | 4bpp sprites ~29KB vs ~22KB available; may need $6000 too |
-| RAMRDAUX+RAMWRAUX simultaneously = code fetch from aux = crash | Every story | Strictly follow read→restore→write→restore sequence |
+| Aux memory sprite data too large for AUX $6100–$BEFF | 5 | RESOLVED S5: 1bpp→DHGR strips HGR palette bit ($7F AND), total 5339 bytes fits in AUX $6100–$7536 |
+| RAMRDAUX+RAMWRAUX simultaneously = code fetch from aux = crash | 5 | RESOLVED S5: auxReadByte trampoline at $1AA7 (LOCODE) mirrored to AUX by loader; RAMRDAUX safe from trampoline |
 
 ---
 

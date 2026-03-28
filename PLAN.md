@@ -12,9 +12,9 @@
 
 > Update this section at the start of each session. It is the primary session-resume signal.
 
-**Current story**: Story 5 — Full Sprite Pipeline
+**Current story**: Story 6 — FPS Benchmark Baseline
 **Status**: NOT STARTED
-**Last session**: 2026-03-27 (Story 4 completed)
+**Last session**: 2026-03-27 (Story 5 completed)
 **Blocking issues**: None
 
 ---
@@ -29,6 +29,8 @@
 | Story 2 binary checksum | d66da169a5a98ba9bd5e8889c5a25987 | S2 | 2026-03-27 |
 | Story 3 binary checksum | 443251a24d7afaa5404eac99377dbbb6 | S3 | 2026-03-27 |
 | Story 4 CHOP1 MD5 (stable) | da860d5d218f567b9777b940243f97c7 | S4 | 2026-03-27 |
+| Story 5 CHOP1 MD5 (stable) | 552f3d751ccc05d98d5a6e62587ce09a | S5 | 2026-03-27 |
+| Story 5 CHOP0 MD5 (stable) | 4a2ae49116907507040f511eacd52ce0 | S5 | 2026-03-27 |
 | DHGR baseline cycles/frame | (capture in Story 6) | S6 | — |
 | DHGR baseline FPS | (compute in Story 6) | S6 | — |
 | Post-opt-7a cycles/frame | (capture in Story 7a) | S7 | — |
@@ -50,6 +52,27 @@ Stretch target: >= 25 FPS (40,875 cycles/frame maximum)
 ## Session Notes
 
 > Append one entry per session. Newest at top.
+
+### Session 4 — 2026-03-27
+- Story 5 completed: all 128 sprites converted and loaded; auxReadByte trampoline enables
+  safe RAMRDAUX reads; blitImage/blitImageFlip ported to dual-bank DHGR writes.
+- Key implementation: CHOPAUX (5339 bytes) loaded to AUX $6100 by loader. Headers-only
+  (.byte W, H, aux_ptr_lo, aux_ptr_hi) placed at HICODE $AB1C (512 bytes = 128 sprites × 4 bytes).
+  Pixel data lives exclusively in AUX memory — never in MAIN.
+- Key discovery: RAMRDAUX crash — STA $C003 inside HICODE ($6000+) crashes because AUX at
+  those addresses contains sprite data/zeros, not valid opcodes. CPU fetches garbage → BRK.
+  Solution: auxReadByte trampoline (10 bytes at $1AA7 in LOCODE). Loader mirrors these
+  bytes to AUX $1AA7 via RAMWRAUX loop so RAMRDAUX is safe: AUX $1AA7 has valid opcodes.
+- Key discovery: ca65 .org in relocatable segment sets label addresses but does NOT insert
+  filler — bytes land at the natural code position. Attempted .org $1D92 trampoline
+  placement caused JSR to call wrong address. Fix: removed .org, used natural LOCODE placement.
+- Key discovery: convert_sprites.py emit_inc() must output headers-only (4 bytes/sprite).
+  Adding pixel bytes to the inc caused HIRAM overflow (503 bytes). Pixel data must stay
+  in CHOPAUX (AUX file only).
+- Jace validation confirmed: PC=$185B (blitImage inner loop), $AB1C correct sprite headers,
+  $1AA7 trampoline intact, DHGR VRAM $2000+ non-zero (terrain/sky pattern active).
+- Story 5 CHOP1 MD5 (stable): 552f3d751ccc05d98d5a6e62587ce09a
+- Story 5 CHOP0 MD5 (stable): 4a2ae49116907507040f511eacd52ce0
 
 ### Session 3 — 2026-03-27
 - Story 4 completed: blitImage DHGR port — helicopter head-on sprite visible.
@@ -366,7 +389,7 @@ Screenshot showing helicopter head-on sprite at center screen with background be
 
 ### Story 5: Full Sprite Pipeline
 
-**Status**: NOT STARTED
+**Status**: DONE — 2026-03-27
 **Prerequisite**: Story 4 complete and verified.
 
 **Scope**: Port all remaining blit functions and convert all sprite data. Full game frame renders correctly with all sprite types.

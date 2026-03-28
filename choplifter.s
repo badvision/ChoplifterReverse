@@ -2229,7 +2229,7 @@ clipToScrollDone:
 ; mountains). Image to render has been previously set up with helper functions such as clipToScroll.
 ; Preserves registers.
 blitAlignedImage:		; $155d
-		rts
+		jmp		blitImage
 
 
 
@@ -2440,7 +2440,7 @@ alignImgState:		; $16dd
 ; been set up previously with helper functions like clipToScroll and setWorldspace).
 ; Preserves registers.
 renderSprite:			; $16de
-		rts
+		jmp		blitImage
 
 
 ; Renders enemy sprites facing left. This is a copy of the above routine, with horizontal
@@ -2448,7 +2448,7 @@ renderSprite:			; $16de
 ; been set up previously with helper functions like clipToScroll and setWorldspace).
 ; Preserves registers.
 renderSpriteFlip:		; $177c
-		rts
+		jmp		blitImageFlip
 
 
 
@@ -2458,8 +2458,8 @@ renderSpriteFlip:		; $177c
 ; renderTiltedSpriteRight
 renderTiltRightDeadCode:		; $1826
 		lda		#$00
-		sta 	ZP_REGISTER
-		sta 	ZP_UNUSEDBA
+		sta 	ZP_AUX_SPRITE_PTR_H
+		sta 	ZP_AUX_SPRITE_PTR_L
 		jmp		renderSpriteRightStub
 
 
@@ -2468,7 +2468,7 @@ renderTiltRightDeadCode:		; $1826
 ; configured with a helper routine such as clipToScroll, setWorldspace, etc.
 renderSpriteRight:		; $182f
 renderSpriteRightStub:
-		rts
+		jmp		blitImage
 
 
 
@@ -2478,8 +2478,8 @@ renderSpriteRightStub:
 ; renderTiltedSpriteRight
 renderTiltLeftDeadCode:			; $18b5
 		lda		#$00
-		sta		ZP_REGISTER
-		sta		ZP_UNUSEDBA
+		sta		ZP_AUX_SPRITE_PTR_H
+		sta		ZP_AUX_SPRITE_PTR_L
 		jmp		renderSpriteLeftStub
 
 
@@ -2490,7 +2490,7 @@ renderTiltLeftDeadCode:			; $18b5
 ; to flip the image left to right
 renderSpriteLeft:		; $18be
 renderSpriteLeftStub:
-		rts
+		jmp		blitImage
 
 
 ; Unused graphics routine. I believe this was an attempt to handle sprite tilt in a clever
@@ -2593,42 +2593,44 @@ tiltLeftDeadCodeByteIndex:		; $19d7
 
 ; Blits a rectangular image with pixel alignment that was previously configured with
 ; a helper routine (such as setBlitPos, setAnimLoc, or clipToScroll)
-; Story 4: DHGR dual-bank sprite blit. Reads from ZP_SPRITEANIM_PTR (set by caller).
-; Guard: if sprite pointer high byte < $AB, returns immediately (old HGR data, not DHGR).
+; Story 5: DHGR true dual-bank sprite blit. Aux bank = lower nibble, main bank = upper nibble.
+; Guard: if ZP_SPRITEANIM_PTR_H < $AB, returns immediately (old HGR data, not DHGR).
 ; Per-pixel transparency: $00 bytes are skipped (background shows through).
 blitImage:			; $19d8
         sta     ZP_REGISTER_A           ; save registers
         stx     ZP_REGISTER_X
         sty     ZP_REGISTER_Y
 
-        jsr     parseImageHeader        ; copies SPRITEANIM_PTR to PARAM_PTR, reads W/H, advances +2
-
-        ; Advance past color byte and reserved byte (bytes 2 and 3 of 4-byte header)
-        clc
-        lda     ZP_PARAM_PTR_L
-        adc     #2
-        sta     ZP_PARAM_PTR_L
-        bcc     :+
-        inc     ZP_PARAM_PTR_H
-:
-        ; Guard: only render if sprite data is in DHGR range ($AB00+)
-        lda     ZP_PARAM_PTR_H
+        ; Guard: only render converted DHGR sprites ($AB1C+)
+        lda     ZP_SPRITEANIM_PTR_H
         cmp     #$AB
-        bcc     blitImageDone
+        bcs     blitImageGuardPass
+        jmp     blitImageDone           ; not a DHGR sprite -- skip render
+blitImageGuardPass:
 
-        ; Compute starting column byte from ZP_SCREEN_X_L
+        ; parseImageHeader: ZP_PARAM_PTR = ZP_SPRITEANIM_PTR, reads W/H into
+        ; ZP_IMAGE_W/H, advances ZP_PARAM_PTR +2 (now points at byte 2 = aux_ptr_lo)
+        jsr     parseImageHeader
+
+        ; Read aux_ptr from header bytes 2-3 → ZP_AUX_SPRITE_PTR_L/H
+        ldy     #0
+        lda     (ZP_PARAM_PTR_L),y      ; byte 2 = aux_ptr_lo
+        sta     ZP_AUX_SPRITE_PTR_L
+        ldy     #1
+        lda     (ZP_PARAM_PTR_L),y      ; byte 3 = aux_ptr_hi
+        sta     ZP_AUX_SPRITE_PTR_H
+
+        ; Compute starting screen column byte
         jsr     calcRowBitByte          ; -> ZP_CURR_X_BYTE
 
-        ; Init row counter from Y screen position
+        ; Init row counter and save starting column
         lda     ZP_SCREEN_Y
         sta     ZP_RENDER_CURR_Y
-
-        ; Save starting column for each row restart
         lda     ZP_CURR_X_BYTE
-        sta     ZP_FILL_BYTE            ; reuse ZP_FILL_BYTE as col save
+        sta     ZP_FILL_BYTE            ; column save for each row restart
 
 blitImageRowLoop:
-        ; Look up DHGR row base address
+        ; Look up DHGR row base address for current row
         ldx     ZP_RENDER_CURR_Y
         lda     dhgrRowLo,x
         sta     ZP_DHGR_ROW_L
@@ -2636,40 +2638,44 @@ blitImageRowLoop:
         eor     ZP_PAGEMASK
         sta     ZP_DHGR_ROW_H
 
-        ; Write each sprite column to aux bank then main bank
-        ldy     ZP_FILL_BYTE            ; Y = current screen column index
-        ldx     #0                      ; X = sprite data column index
+        ldy     ZP_FILL_BYTE            ; Y = starting screen column
+        ldx     #0                      ; X = sprite column (0..width-1)
 
 blitImageColLoop:
-        ; X = sprite column (0..width-1), Y = screen column byte
+        ; X = sprite column, Y = screen column
         sty     ZP_DRAWSCRATCH1         ; save screen column Y
         txa
-        tay                             ; Y = sprite column index for indirect read
-        lda     (ZP_PARAM_PTR_L),y      ; read sprite byte[X]
+        tay                             ; Y = sprite column for AUX read
+        ; auxReadByte: reads AUX[(ZP_AUX_SPRITE_PTR),Y] → X
+        jsr     auxReadByte
         ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
-        beq     blitImageSkipPx         ; $00 = transparent, skip
-        and     #$7F                    ; clear bit 7 (DHGR requirement)
-        sei
-        sta     $C005                   ; RAMWRAUX — route writes to aux bank
-        sta     (ZP_DHGR_ROW_L),y      ; write aux bank
-        sta     $C004                   ; RAMWRMAIN — restore main bank
+        beq     blitImageSkipPx         ; X=0 means transparent pixel
+        txa
+        and     #$7F                    ; enforce DHGR bit 7 = 0
+        sei                             ; block IRQ for dual-bank write
+        sta     $C005                   ; RAMWRAUX
+        sta     (ZP_DHGR_ROW_L),y      ; write aux DHGR bank
+        sta     $C004                   ; RAMWRMAIN
         cli
-        sta     (ZP_DHGR_ROW_L),y      ; write main bank (same value — Story 4 white-only)
+        sta     (ZP_DHGR_ROW_L),y      ; write main DHGR bank (same byte)
+
 blitImageSkipPx:
+        ldy     ZP_DRAWSCRATCH1         ; screen column
         iny                             ; advance screen column
+        sty     ZP_DRAWSCRATCH1
         inx                             ; advance sprite column
         cpx     ZP_IMAGE_W
         bcc     blitImageColLoop
 
-        ; Advance sprite pointer to next row
+        ; Advance AUX sprite pointer to next row (+ ZP_IMAGE_W bytes)
         clc
-        lda     ZP_PARAM_PTR_L
+        lda     ZP_AUX_SPRITE_PTR_L
         adc     ZP_IMAGE_W
-        sta     ZP_PARAM_PTR_L
+        sta     ZP_AUX_SPRITE_PTR_L
         bcc     :+
-        inc     ZP_PARAM_PTR_H
+        inc     ZP_AUX_SPRITE_PTR_H
 :
-        ; Row bounds check — stop before wrapping below 0
+        ; Row bounds check — stop before wrapping below row 0
         lda     ZP_RENDER_CURR_Y
         beq     blitImageDone
         dec     ZP_RENDER_CURR_Y
@@ -2685,9 +2691,105 @@ blitImageDone:
 
 ; Blits a rectangular image flipped left/right with pixel alignment. The image was previously
 ; configured with a helper routine (such as setBlitPos, setAnimLoc, or clipToScroll)
-; This is a copy of blitImage above, but the left/right iteration is flipped
+; Story 5: Same as blitImage but screen column Y starts at rightmost column and DECREMENTS.
+; Sprite data columns still read left-to-right (X increments 0..width-1).
 blitImageFlip:	; $1a5e
-		rts
+        sta     ZP_REGISTER_A           ; save registers
+        stx     ZP_REGISTER_X
+        sty     ZP_REGISTER_Y
+
+        ; Guard: only render converted DHGR sprites ($AB1C+)
+        lda     ZP_SPRITEANIM_PTR_H
+        cmp     #$AB
+        bcs     blitImageFlipGuardPass
+        jmp     blitImageFlipDone       ; not a DHGR sprite -- skip render
+blitImageFlipGuardPass:
+
+        ; parseImageHeader: ZP_PARAM_PTR = ZP_SPRITEANIM_PTR, reads W/H,
+        ; advances ZP_PARAM_PTR +2 (now points at byte 2 = aux_ptr_lo)
+        jsr     parseImageHeader
+
+        ; Read aux_ptr from header bytes 2-3 → ZP_AUX_SPRITE_PTR_L/H
+        ldy     #0
+        lda     (ZP_PARAM_PTR_L),y      ; byte 2 = aux_ptr_lo
+        sta     ZP_AUX_SPRITE_PTR_L
+        ldy     #1
+        lda     (ZP_PARAM_PTR_L),y      ; byte 3 = aux_ptr_hi
+        sta     ZP_AUX_SPRITE_PTR_H
+
+        ; Compute starting screen column byte
+        jsr     calcRowBitByte          ; -> ZP_CURR_X_BYTE
+
+        ; Init row counter
+        lda     ZP_SCREEN_Y
+        sta     ZP_RENDER_CURR_Y
+
+        ; Flip: starting screen column = ZP_CURR_X_BYTE + ZP_IMAGE_W - 1 (rightmost)
+        clc
+        lda     ZP_CURR_X_BYTE
+        adc     ZP_IMAGE_W
+        sec
+        sbc     #1
+        sta     ZP_FILL_BYTE            ; column save (rightmost for first column)
+
+blitImageFlipRowLoop:
+        ; Look up DHGR row base address for current row
+        ldx     ZP_RENDER_CURR_Y
+        lda     dhgrRowLo,x
+        sta     ZP_DHGR_ROW_L
+        lda     dhgrRowHi,x
+        eor     ZP_PAGEMASK
+        sta     ZP_DHGR_ROW_H
+
+        ldy     ZP_FILL_BYTE            ; Y = starting screen column (rightmost)
+        ldx     #0                      ; X = sprite column (0..width-1, left-to-right)
+
+blitImageFlipColLoop:
+        ; X = sprite column (left-to-right), Y = screen column (right-to-left)
+        sty     ZP_DRAWSCRATCH1         ; save screen column Y
+        txa
+        tay                             ; Y = sprite column for AUX read
+        ; auxReadByte: reads AUX[(ZP_AUX_SPRITE_PTR),Y] → X
+        jsr     auxReadByte
+        ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
+        beq     blitImageFlipSkipPx     ; X=0 means transparent pixel
+        txa
+        and     #$7F                    ; enforce DHGR bit 7 = 0
+        sei                             ; block IRQ for dual-bank write
+        sta     $C005                   ; RAMWRAUX
+        sta     (ZP_DHGR_ROW_L),y      ; write aux DHGR bank
+        sta     $C004                   ; RAMWRMAIN
+        cli
+        sta     (ZP_DHGR_ROW_L),y      ; write main DHGR bank (same byte)
+
+blitImageFlipSkipPx:
+        ldy     ZP_DRAWSCRATCH1         ; screen column
+        dey                             ; decrement screen column (flip direction)
+        sty     ZP_DRAWSCRATCH1
+        inx                             ; advance sprite column (left-to-right)
+        cpx     ZP_IMAGE_W
+        bcc     blitImageFlipColLoop
+
+        ; Advance AUX sprite pointer to next row (+ ZP_IMAGE_W bytes)
+        clc
+        lda     ZP_AUX_SPRITE_PTR_L
+        adc     ZP_IMAGE_W
+        sta     ZP_AUX_SPRITE_PTR_L
+        bcc     :+
+        inc     ZP_AUX_SPRITE_PTR_H
+:
+        ; Row bounds check — stop before wrapping below row 0
+        lda     ZP_RENDER_CURR_Y
+        beq     blitImageFlipDone
+        dec     ZP_RENDER_CURR_Y
+        dec     ZP_IMAGE_H
+        bne     blitImageFlipRowLoop
+
+blitImageFlipDone:
+        lda     ZP_REGISTER_A           ; restore registers
+        ldx     ZP_REGISTER_X
+        ldy     ZP_REGISTER_Y
+        rts
 
 
 
@@ -2707,10 +2809,12 @@ blitImageFlip:	; $1a5e
 ; for example. However when flying head on, there is only one sprite and this tilt renderer is used.
 
 ; Renders a sprite tilted to the left. Preserves registers.
+; Story 7: renderTiltedSpriteLeft -- deferred to Story 7
 renderTiltedSpriteLeft:			; $1af3
 		rts
 
 ; Renders a sprite tilted to the right. Preserves registers.
+; Story 7: renderTiltedSpriteRight -- deferred to Story 7
 renderTiltedSpriteRight:
 		rts
 
@@ -2760,10 +2864,23 @@ pixelMasksRight:	; $1d82  Right end of byte, decreasing
 pixelMasksLeft:		; $1d8a Left end of byte, decreasing
 	.byte	$00,$7e,$7c,$78,$70,$60,$40,$00
 
-.org $1d92
+; AUX memory pixel read trampoline (10 bytes).
+; The loader copies these 10 bytes to AUX at the same address (auxReadByte)
+; via RAMWRAUX so that RAMRDAUX opcode fetches execute correctly.
+; Calling convention: Y = sprite column index (0..width-1),
+;   ZP_AUX_SPRITE_PTR_L/H = base address of current sprite row in AUX memory.
+; Returns: X = pixel byte from AUX[(ZP_AUX_SPRITE_PTR),Y].
+; Clobbers: A, X.  Preserves: Y.
+auxReadByte:
+    sta     $C003               ; RAMRDAUX (opcode $8D fetched from MAIN while RAMRDMAIN active)
+                                ; *** from here ALL reads including opcode fetches come from AUX ***
+    lda     (ZP_AUX_SPRITE_PTR_L),y   ; opcode $B1/$BA: AUX mirror must match MAIN here
+    tax                         ; opcode $AA: AUX mirror must match MAIN here
+    sta     $C002               ; RAMRDMAIN ($8D/$02/$C0 fetched from AUX mirror)
+    rts                         ; fetched from MAIN (RAMRDMAIN restored before this fetch)
 
-; 622 unused bytes until bottom of HGR page 0 at $2000
-UNUSED 622
+; 612 unused bytes until bottom of HGR page 0 at $2000  (was 622, minus 10 for trampoline)
+UNUSED 612
 
 
 ; Skip over high res pages
@@ -11857,218 +11974,218 @@ UNUSED 135
 ; A list of the sprites needed for all sideways chopper angles.
 ; Same sprites are used for facing left and right, with renderer handling X-flip
 chopperSideSpriteTable:		; $a000
-	.word	$a102		; -5 Full tilt forward, nose down
-	.word	$a14c
-	.word	$a18e
-	.word	$a1db
-	.word	$a223
-	.word	$a26b		;  No tilt
-	.word	$a2ae
-	.word	$a2f1
-	.word	$a334
-	.word	$a37c
-	.word	$a3c9		; +5 Full tilt backward, backward nose up
+	.word	dhgrSpriteAddr_000		; -5 Full tilt forward, nose down
+	.word	dhgrSpriteAddr_001
+	.word	dhgrSpriteAddr_002
+	.word	dhgrSpriteAddr_003
+	.word	dhgrSpriteAddr_004
+	.word	dhgrSpriteAddr_005		;  No tilt
+	.word	dhgrSpriteAddr_006
+	.word	dhgrSpriteAddr_007
+	.word	dhgrSpriteAddr_008
+	.word	dhgrSpriteAddr_009
+	.word	dhgrSpriteAddr_010		; +5 Full tilt backward, backward nose up
 
 ; A table of sprites to use when head-on or in rotation animation. Tilt is done with tilt-renderer
 chopperHeadOnSpriteTable:		; $a016
-	.word	chopperHeadOnDHGR0	; DHGR head-on frame 0 (Story 4)
-	.word	$a437		; Partially rotated from head-on to sideways (frame 1)
-	.word	$a453		; Partially rotated from head-on to sideways (frame 2)
-	.word	$a47c		; Partially rotated from head-on to sideways (frame 3)
-	.word	$a4b2		; Partially rotated from head-on to sideways (frame 4)
+	.word	dhgrSpriteAddr_011		; DHGR head-on frame 0 (chopperHeadOnDHGR0 = sprite 11)
+	.word	dhgrSpriteAddr_012		; Partially rotated from head-on to sideways (frame 1)
+	.word	dhgrSpriteAddr_013		; Partially rotated from head-on to sideways (frame 2)
+	.word	dhgrSpriteAddr_014		; Partially rotated from head-on to sideways (frame 3)
+	.word	dhgrSpriteAddr_015		; Partially rotated from head-on to sideways (frame 4)
 
 chopperSquishingSpriteTable:	; $a020
-	.word	$a4e8		; Squished down a little sideways (mid-bounce) $a020
-	.word	$a526		; Squished down a little head-on (mid-bounce)	$a022
+	.word	dhgrSpriteAddr_016		; Squished down a little sideways (mid-bounce) $a020
+	.word	dhgrSpriteAddr_017		; Squished down a little head-on (mid-bounce)	$a022
 
 mainRotorAnimationTable:			; $a024
-	.word	$a540		; Main rotor (frame 1)
-	.word	$a547		; Main rotor (frame 2)
-	.word	$a54e		; Main rotor (frame 3)
+	.word	dhgrSpriteAddr_018		; Main rotor (frame 1)
+	.word	dhgrSpriteAddr_019		; Main rotor (frame 2)
+	.word	dhgrSpriteAddr_020		; Main rotor (frame 3)
 
 tailRotorAnimationTable:			; $a02a
-	.word	$a555		; Tail rotor (frame 1)
-	.word 	$a55d		; Tail rotor (frame 2)
-	.word 	$a565		; Tail rotor (frame 3)
-	.word 	$a56b		; Tail rotor (frame 4)
+	.word	dhgrSpriteAddr_021		; Tail rotor (frame 1)
+	.word	dhgrSpriteAddr_022		; Tail rotor (frame 2)
+	.word	dhgrSpriteAddr_023		; Tail rotor (frame 3)
+	.word	dhgrSpriteAddr_024		; Tail rotor (frame 4)
 
 ; All the sprite frames for rendering the enemy jets. Pointers into this come from jetSpriteTable
 jetMasterSpriteTable:	; $a032
-	.word	$a574		; Enemy jet, level flight
-	.word	$a585		; Enemy jet, turning (frame 1)
-	.word	$a5b3		; Enemy jet, turning (frame 2)
-	.word	$a5dc		; Enemy jet, turning (frame 3)
-	.word	$a60b		; Enemy jet, turning (frame 4)
-	.word	$a62d		; Enemy jet, turning (frame 5)
-	.word	$a662		; Enemy jet, turning (frame 6)
-	.word	$a6a4		; Enemy jet, turning (frame 7)
-	.word	$a6e6		; Enemy jet, turning (frame 8)
-	.word	$a709		; Enemy jet, turning (frame 9)
-	.word	$a735		; Enemy jet, turning (frame 10)
-	.word	$a75f		; Enemy jet, turning (frame 11)
-	.word	$a789		; Enemy jet, turning (frame 12)
-	.word	$a7c2		; Enemy jet, turning (frame 13)
-	.word	$a81e		; Enemy jet, turning (frame 14)
-	.word	$a85c		; Enemy jet, turning (frame 15)
-	.word	$a892		; Enemy jet, turning (frame 16)
-	.word	$a8c4		; Enemy jet, turning (frame 17)
-	.word	$a8e7		; Enemy jet, turning (frame 18)
-	.word	$a8fb		; Enemy jet, turning (frame 19)
-	.word	$a957		; Enemy jet, turning (frame 20)
-	.word	$a995		; Enemy jet, turning (frame 21)
-	.word	$a9cb		; Enemy jet, turning (frame 22)
-	.word	$aa01		; Enemy jet, turning (frame 23)
-	.word	$aa24		; Enemy jet, turning (frame 24)
+	.word	dhgrSpriteAddr_025		; Enemy jet, level flight
+	.word	dhgrSpriteAddr_026		; Enemy jet, turning (frame 1)
+	.word	dhgrSpriteAddr_027		; Enemy jet, turning (frame 2)
+	.word	dhgrSpriteAddr_028		; Enemy jet, turning (frame 3)
+	.word	dhgrSpriteAddr_029		; Enemy jet, turning (frame 4)
+	.word	dhgrSpriteAddr_030		; Enemy jet, turning (frame 5)
+	.word	dhgrSpriteAddr_031		; Enemy jet, turning (frame 6)
+	.word	dhgrSpriteAddr_032		; Enemy jet, turning (frame 7)
+	.word	dhgrSpriteAddr_033		; Enemy jet, turning (frame 8)
+	.word	dhgrSpriteAddr_034		; Enemy jet, turning (frame 9)
+	.word	dhgrSpriteAddr_035		; Enemy jet, turning (frame 10)
+	.word	dhgrSpriteAddr_036		; Enemy jet, turning (frame 11)
+	.word	dhgrSpriteAddr_037		; Enemy jet, turning (frame 12)
+	.word	dhgrSpriteAddr_038		; Enemy jet, turning (frame 13)
+	.word	dhgrSpriteAddr_039		; Enemy jet, turning (frame 14)
+	.word	dhgrSpriteAddr_040		; Enemy jet, turning (frame 15)
+	.word	dhgrSpriteAddr_041		; Enemy jet, turning (frame 16)
+	.word	dhgrSpriteAddr_042		; Enemy jet, turning (frame 17)
+	.word	dhgrSpriteAddr_043		; Enemy jet, turning (frame 18)
+	.word	dhgrSpriteAddr_044		; Enemy jet, turning (frame 19)
+	.word	dhgrSpriteAddr_045		; Enemy jet, turning (frame 20)
+	.word	dhgrSpriteAddr_046		; Enemy jet, turning (frame 21)
+	.word	dhgrSpriteAddr_047		; Enemy jet, turning (frame 22)
+	.word	dhgrSpriteAddr_048		; Enemy jet, turning (frame 23)
+	.word	dhgrSpriteAddr_049		; Enemy jet, turning (frame 24)
 
 ; All the sprite frames for rendering the enemy tanks
 tankSpriteTable:		; $a064
-	.word	$aa38		; Tank turret
-	.word	$aa40		; Tank tread (frame 1)
-	.word	$aa5a		; Tank tread (frame 2)
+	.word	dhgrSpriteAddr_050		; Tank turret
+	.word	dhgrSpriteAddr_051		; Tank tread (frame 1)
+	.word	dhgrSpriteAddr_052		; Tank tread (frame 2)
 
 tankCannonSpriteTable:	; $a06a
-	.word	$aa74		; Tank cannon, facing full right
-	.word	$aa7b		; Tank cannon, facing up and right
-	.word	$aa81		; Tank cannon, facing up
-	.word	$aa87		; Tank cannon, facing up and left
-	.word	$aa8d		; Tank cannon, facing full left
+	.word	dhgrSpriteAddr_053		; Tank cannon, facing full right
+	.word	dhgrSpriteAddr_054		; Tank cannon, facing up and right
+	.word	dhgrSpriteAddr_055		; Tank cannon, facing up
+	.word	dhgrSpriteAddr_056		; Tank cannon, facing up and left
+	.word	dhgrSpriteAddr_057		; Tank cannon, facing full left
 
 ; All the sprites for the various bullets
 bulletSpriteTable:		; $a074
-	.word	$aa94		; Chopper bullet	$a074
-	.word	$aa99		; Tank shell		$a076
-	.word	$aa9e		; Jet missile (The big ones fired in pairs at high altitude)  $a078
-	.word	$aaa6		; Jet bomb (The little one that drops at an angle)  $a07a
-	.word	$aaa9		; Chopper muzzle flash	$a07c
+	.word	dhgrSpriteAddr_058		; Chopper bullet	$a074
+	.word	dhgrSpriteAddr_059		; Tank shell		$a076
+	.word	dhgrSpriteAddr_060		; Jet missile (The big ones fired in pairs at high altitude)  $a078
+	.word	dhgrSpriteAddr_061		; Jet bomb (The little one that drops at an angle)  $a07a
+	.word	dhgrSpriteAddr_062		; Chopper muzzle flash	$a07c
 
 ; All the sprites for the alien saucer
 alienSpriteTable:		; $a07e
-	.word	$aaaf		; Saucer body					$a07e
-	.word	$aac5		; Saucer mid section (frame 1) 	$a080
-	.word	$aacb		; Saucer mid section (frame 2)	$a082
-	.word	$aad1		; Saucer mid section (frame 3)	$a084
+	.word	dhgrSpriteAddr_063		; Saucer body					$a07e
+	.word	dhgrSpriteAddr_064		; Saucer mid section (frame 1) 	$a080
+	.word	dhgrSpriteAddr_065		; Saucer mid section (frame 2)	$a082
+	.word	dhgrSpriteAddr_066		; Saucer mid section (frame 3)	$a084
 
 ; All the sprite frames for rendering the explosions
 explosionSpriteTable:	; $a086
-	.word	$aad7		; Explosion (frame 1)
-	.word	$aaf4		; Explosion (frame 2)
-	.word	$ab17		; Explosion (frame 3)
-	.word	$ab3d		; Explosion (frame 4)
-	.word	$ab63		; Explosion (frame 5)
+	.word	dhgrSpriteAddr_067		; Explosion (frame 1)
+	.word	dhgrSpriteAddr_068		; Explosion (frame 2)
+	.word	dhgrSpriteAddr_069		; Explosion (frame 3)
+	.word	dhgrSpriteAddr_070		; Explosion (frame 4)
+	.word	dhgrSpriteAddr_071		; Explosion (frame 5)
 
 chopperRubbleSprite:
-	.word	$ab7d		; $a090	Chopper rubble sprite
+	.word	dhgrSpriteAddr_072		; $a090	Chopper rubble sprite
 
-	.word	$ab87		; $a092	Dying hostage
+	.word	dhgrSpriteAddr_073		; $a092	Dying hostage
 
 ; All the sprite frames for rendering the hostages
 hostageRunningSpriteTable:		; $a094
-	.word	$ab9f		; Running man (frame 1)
-	.word	$abb7		; Running man (frame 2)
-	.word	$abcf		; Running man (frame 3)
-	.word	$abe7		; Running man (frame 4)
+	.word	dhgrSpriteAddr_074		; Running man (frame 1)
+	.word	dhgrSpriteAddr_075		; Running man (frame 2)
+	.word	dhgrSpriteAddr_076		; Running man (frame 3)
+	.word	dhgrSpriteAddr_077		; Running man (frame 4)
 
 hostageWavingSpriteTable:		; $a09c
-	.word	$abff		; Waving man (frame 1)
-	.word	$ac17		; Waving man (frame 2)
-	.word	$ac2f		; Waving man (frame 3)
+	.word	dhgrSpriteAddr_078		; Waving man (frame 1)
+	.word	dhgrSpriteAddr_079		; Waving man (frame 2)
+	.word	dhgrSpriteAddr_080		; Waving man (frame 3)
 
 hostageLoadingSpriteTable:		; $a0a2
-	.word	$ac47		; Man jumping into chopper (frame 1)
-	.word	$ac5f		; Man jumping into chopper (frame 2)
+	.word	dhgrSpriteAddr_081		; Man jumping into chopper (frame 1)
+	.word	dhgrSpriteAddr_082		; Man jumping into chopper (frame 2)
 
 mountainSpriteTable:		; $a0a6
-	.word	$ac77			; There are four different mountain patterns
-	.word	$ad59
-	.word	$ae1F
-	.word	$af1D
+	.word	dhgrSpriteAddr_083		; There are four different mountain patterns
+	.word	dhgrSpriteAddr_084
+	.word	dhgrSpriteAddr_085
+	.word	dhgrSpriteAddr_086
 
 hudBorderSprite:					; $a0ae
-	.word	$b01B		; Right border (green) of HUD. Special sprite is used to render this
+	.word	dhgrSpriteAddr_087		; Right border (green) of HUD. Special sprite is used to render this
 
 hudCornerSprite:					; $a0b0
-	.word	$b034		; Sprite for angled top corners of HUD
+	.word	dhgrSpriteAddr_088		; Sprite for angled top corners of HUD
 
 baseBuildingSprite:		; The orange main building of the base
-	.word	$b04E			; $a0b2
+	.word	dhgrSpriteAddr_089		; $a0b2
 
 baseGrassCornerSprite:		; The little corners of grass at the base
-	.word	$b344			; $a0b4
+	.word	dhgrSpriteAddr_090		; $a0b4
 
 baseFlagpole:				; The flag pole (without the flapping flag)
-	.word	$b350			; $a0b6
+	.word	dhgrSpriteAddr_091		; $a0b6
 
 baseFlagSpriteTable:		; The animation frames of the flag
-	.word	$b35E			; $a0b8
-	.word	$b370
+	.word	dhgrSpriteAddr_092		; $a0b8
+	.word	dhgrSpriteAddr_093
 
 baseLeftSidewalkSprite:		; Little piece of sidewalk left of the base
-	.word	$b382			; $a0bc
+	.word	dhgrSpriteAddr_094		; $a0bc
 baseRightSidewalkSprite:	; Little piece of sidewalk right of the base
-	.word	$b38A			; $a0be
+	.word	dhgrSpriteAddr_095		; $a0be
 
 fenceTowerSprite4:			; Smallest (furthest) security fence tower
-	.word	$b392			; $a0c0
+	.word	dhgrSpriteAddr_096		; $a0c0
 fenceTowerSprite3:
-	.word	$b399			; $a0c2
+	.word	dhgrSpriteAddr_097		; $a0c2
 fenceTowerSprite2:
-	.word	$b3A7			; $a0c4
+	.word	dhgrSpriteAddr_098		; $a0c4
 fenceTowerSprite1:
-	.word	$b3B7			; $a0c6
+	.word	dhgrSpriteAddr_099		; $a0c6
 fenceTowerSprite0:			; Largest (closest) security fence tower
-	.word	$b3D4			; $a0c8
+	.word	dhgrSpriteAddr_100		; $a0c8
 
 ; All the sprites for the hostage houses
 houseSpriteTable:
-	.word	$b3F7			; $a0ca	Normal house
-	.word	$b57A			;		House on fire
+	.word	dhgrSpriteAddr_101		; $a0ca	Normal house
+	.word	dhgrSpriteAddr_102		;		House on fire
 
 houseSillSprite:			; The white strip along the bottom of the house
-	.word	$b6FD			; $a0ce
+	.word	dhgrSpriteAddr_103		; $a0ce
 
 houseDebrisSprite:			; The debris in front of a burning house
-	.word	$b707			; $a0d0
+	.word	dhgrSpriteAddr_104		; $a0d0
 
 houseFireSprites:
-	.word	$b70D			; $a0d2	Fire animation (Frame 1)
-	.word	$b719			; $a0d4 Fire animation (Frame 2)
+	.word	dhgrSpriteAddr_105		; $a0d2	Fire animation (Frame 1)
+	.word	dhgrSpriteAddr_106		; $a0d4 Fire animation (Frame 2)
 
 
 ; A list of pointers to all the font glyphs
 fontGraphicsTable:		; $a0d6
-	.word	$b725		; 0
-	.word	$b72E		; 1
-	.word	$b737		; 2
-	.word	$b740		; 3
-	.word	$b749		; 4
-	.word	$b752		; 5
-	.word	$b75B		; 6
-	.word	$b764		; 7
-	.word	$b76D		; 8
-	.word	$b776		; 9
+	.word	dhgrSpriteAddr_107		; 0
+	.word	dhgrSpriteAddr_108		; 1
+	.word	dhgrSpriteAddr_109		; 2
+	.word	dhgrSpriteAddr_110		; 3
+	.word	dhgrSpriteAddr_111		; 4
+	.word	dhgrSpriteAddr_112		; 5
+	.word	dhgrSpriteAddr_113		; 6
+	.word	dhgrSpriteAddr_114		; 7
+	.word	dhgrSpriteAddr_115		; 8
+	.word	dhgrSpriteAddr_116		; 9
 
 
 hudBubbleSprite:			; The little bubbles next to the HUD numbers
-	.word $b77f				; $a0ea
+	.word dhgrSpriteAddr_117		; $a0ea
 
 hudBackgroundBubbleSprite:	; The black background on the HUD numbers
-	.word $b78F				; $a0ec
+	.word dhgrSpriteAddr_118		; $a0ec
 
 
 
 ; A list of pointers to all the title graphic pieces
 titleGraphicsTable:		; $a0ee
-	.word	$b7c7		; Your Mission: Rescue Hostages $a0ee
-	.word	$b943		; Choplifter logo			$a0f0
-	.word	$ba70		; Broderbund Presents		$a0f2
-	.word	$bba6		; Dan Gorlin logo			$a0f4
-	.word	$bc85		; The End					$a0f6
-	.word	$bcf0		; Broderbund crown logo		$a0f8
+	.word	dhgrSpriteAddr_119		; Your Mission: Rescue Hostages $a0ee
+	.word	dhgrSpriteAddr_120		; Choplifter logo			$a0f0
+	.word	dhgrSpriteAddr_121		; Broderbund Presents		$a0f2
+	.word	dhgrSpriteAddr_122		; Dan Gorlin logo			$a0f4
+	.word	dhgrSpriteAddr_123		; The End					$a0f6
+	.word	dhgrSpriteAddr_124		; Broderbund crown logo		$a0f8
 
 sortieGraphicsTable:	; $a0fa
-	.word	$bd5b		; First Sortie				$a0fa
-	.word	$be02		; Second Sortie				$a0fc
-	.word 	$beb8		; Third Sortie				$a0fe
+	.word	dhgrSpriteAddr_125		; First Sortie				$a0fa
+	.word	dhgrSpriteAddr_126		; Second Sortie				$a0fc
+	.word	dhgrSpriteAddr_127		; Third Sortie				$a0fe
 
 
 .org $A100
@@ -12076,38 +12193,5 @@ sortieGraphicsTable:	; $a0fa
 ; DHGR row tables have been placed in the HICODE slack area ($8E01+)
 ; to avoid conflicting with CHOPGFX (which loads at $A102).
 ; Story 4: DHGR sprite data begins at $AB1C (immediately after CHOP1 ends at $AB1B).
-.org $AB1C
-
-; DHGR head-on helicopter frame 0 — 2 columns x 13 rows, white
-; Source: CHOPGFX bytes at offset $319, 13 rows x 2 bytes, each AND $7F
-chopperHeadOnDHGR0:
-    .byte 2                 ; width in DHGR columns
-    .byte 13                ; height in rows
-    .byte 15                ; color index: white ($0F)
-    .byte 0                 ; reserved
-    ; Row 0:
-    .byte $0C, $0D
-    ; Row 1:
-    .byte $0F, $00
-    ; Row 2:
-    .byte $0F, $00
-    ; Row 3:
-    .byte $0F, $00
-    ; Row 4:
-    .byte $3F, $40
-    ; Row 5:
-    .byte $60, $60
-    ; Row 6:
-    .byte $40, $20
-    ; Row 7:
-    .byte $40, $30
-    ; Row 8:
-    .byte $7F, $70
-    ; Row 9:
-    .byte $7F, $60
-    ; Row 10:
-    .byte $1F, $00
-    ; Row 11:
-    .byte $70, $60
-    ; Row 12:
-    .byte $60, $70
+; Story 5: Full 128-sprite DHGR header block + address equates, generated by convert_sprites.py
+.include "choplifter_sprites.inc"
