@@ -22,8 +22,11 @@ instructions. Start every session by reading PLAN.md first.
   works identically in DHGR. Preserved unchanged.
 - **All game logic** — physics, input ($C060/$C062), sound ($C030/$C020), entity system,
   scroll physics, game state machine: completely unchanged.
-- **All code in main memory** — aux memory holds sprite data only. 65C02 cannot execute
-  from aux memory (code fetch always reads main).
+- **All code in main memory or LC RAM** — aux memory holds sprite data only. LC RAM
+  ($D000–$FFFF) is safe to execute from even while RAMRDAUX is active (hardware-confirmed:
+  LC routing is independent of RAMRDAUX; Marcus/RAM128k.java Round 2 2026-03-28).
+- **ProDOS is not sacred after load** — once the loader hands off to the game, ProDOS
+  memory (including LC Bank 2 at $D000) may be overwritten. User-confirmed 2026-03-28.
 
 ---
 
@@ -43,11 +46,15 @@ $1B00–$1BBF  dhgrRowLo — 192 DHGR row address low bytes (LOCODE, page-aligne
 $1C00–$1CBF  dhgrRowHi — 192 DHGR row address high bytes (LOCODE, page-aligned, Story 7c)
 $A100–$A3FF  (reserved for future DHGR row tables if needed; currently unused)
 $A102–$AB1B  CHOP1 occupies this range (19228 bytes, HGR sprite pixel data — not yet DHGR)
-$AB1C+       DHGR sprite pixel data starts here — main bank nibbles (Story 4+)
-$BF00+       ProDOS boundary — do not touch
+$AB1C–$AD1B  DHGR sprite headers (128 × 4 bytes: W, H, aux_ptr_lo, aux_ptr_hi)
+$AD1C–$BFFF  ~4.8KB available for expansion (ProDOS boundary irrelevant post-load)
+$D000–$D???  LC RAM: aux_bytes sprite table (5339 bytes) — Design C target
+$D???–$E???  LC RAM: main_bytes sprite table (5339 bytes) — Design C target
+$E???+       LC RAM: inner loop code (~100 bytes), other hot-path code
 
 AUX MEMORY (not executable — data only)
-AUX $6100–$BEFF  DHGR sprite pixel data — aux bank nibbles (~22KB)
+AUX $6100–$75DA  DHGR sprite pixel data — current layout (pre-Design C)
+AUX $75DB–$BFFF  ~18KB available
 ```
 
 ---
@@ -95,25 +102,108 @@ in Story 1. $C05E is the IIe standard; $C07E appears in some references.
 
 ---
 
-## Dual-Bank Write Pattern (blitter inner loop)
+## Memory Management Strategy — Design C (Consensus 2026-03-28)
+
+Outcome of 5-analyst / 5-architect Socratic deliberation. Unanimous (5/5).
+
+### Core Architecture
+
+Sprite data moves to **dual-byte LC RAM tables** ($D000+). The inner loop reads both aux
+and main bytes from LC RAM via absolute indexed addressing — **RAMRDAUX is never used in the
+hot path**. LC reads are independent of RAMRDAUX state (hardware-confirmed: LC routing is a
+separate hardware controller from RAMRDAUX; verified in RAM128k.java).
+
+### Inner Loop Design (~37 cycles/column, unrollable to ~28)
+
+```asm
+; Preconditions: RAMWRAUX active at row entry (STA $C005 once per row)
+; X = sprite column index, Y = screen column index
+; ZP_DHGR_ROW_L/H = current destination row pointer
+
+loop:
+    LDA   lc_aux_table,X     ; 4 — aux byte from LC RAM (RAMRDAUX irrelevant)
+    STA   (ZP_DHGR_ROW_L),Y  ; 6 — write to AUX DHGR bank
+    LDA   lc_main_table,X    ; 4 — main byte from LC RAM
+    STA   $C004               ; 4 — RAMWRMAIN
+    STA   (ZP_DHGR_ROW_L),Y  ; 6 — write to MAIN DHGR bank
+    STA   $C005               ; 4 — restore RAMWRAUX for next column
+    INX                       ; 2
+    INY                       ; 2
+    CPX   sprite_width        ; 2
+    BNE   loop                ; 3 (taken)
+; = 37 cycles/column (single-pass interleaved)
+```
+
+### What Is Eliminated vs. Current (~90 cycles/column opaque)
+
+| Eliminated | Cycles saved |
+|---|---|
+| JSR auxReadByte (JSR+RTS) | 12 |
+| RAMRDAUX trampoline body | 21 |
+| ZP_DRAWSCRATCH1/2 save/restore | 12 |
+| txa/tay/txa register shuffle | 6 |
+| **Total eliminated** | **~51 cycles/column** |
+
+RAMWRAUX/RAMWRMAIN toggle (8 cycles/column) is unavoidable for correct dual-bank writes.
+
+### Safety Invariants (mandatory in every blitImage/blitImageFlip commit)
+
+1. `STA $C002` (RAMRDMAIN) unconditionally at blitImage entry
+2. `STA $C004` (RAMWRMAIN) unconditionally at row loop entry
+3. `STA $C004 + STA $C002` at blitImage exit (clean state for callers)
+4. RAMRDAUX NEVER toggled inside the rendering hot path
+5. Dual-byte correctness: aux_byte ≠ main_byte for most DHGR colors (never same value to both banks)
+
+### LC RAM Initialization (loader change required)
+
+After all ProDOS MLI calls, before `JMP $0300`:
+```asm
+    LDA   $C084      ; LC write-enable (first access)
+    LDA   $C084      ; LC write-enable (second access — hardware requirement)
+    ; copy 10,678 bytes sprite data to $D000+
+```
+ProDOS overwrite is safe — user-confirmed irrelevant after load.
+
+### Migration Path
+
+- **Phase 1**: Fix color bug (distinct aux/main bytes) + RAMWRAUX per-row for blitRect. Zero regression risk.
+- **Phase 2 (Design C)**: Reorganize sprite data to LC RAM dual-byte tables. Rewrite blitImageColLoop. Measure FPS.
+- **Phase 3** (if needed): 2× loop unroll for fixed-width paths → ~28 cycles/column.
+
+### Performance Estimate
+
+- Single-pass baseline: ~35–37 cycles/column (vs ~90 current)
+- 2× unroll: ~28–30 cycles/column
+- FPS target: 15–20 FPS range (exact figure requires profiling non-rendering overhead in Jace)
+
+### Open Verification Tasks (require Jace confirmation before implementation)
+
+1. LC read independence — `LDA lc_table,X` correct regardless of RAMRDAUX state
+2. LC write-enable — double-access $C084 sequence enables writes in Jace
+3. Color table — verify Chen's (aux_byte, main_byte) values empirically
+4. Per-sprite stride — aux-main table offsets produce correct pixels for 2+ sprite widths
+
+---
+
+## Dual-Bank Write Pattern (legacy — superseded by Design C above)
 
 Every DHGR screen write touches the same address twice — once in aux bank, once in main bank.
 Bit 7 of EVERY byte written to DHGR screen MUST be 0 (always AND with $7F before write).
 
 ```asm
-; Per DHGR column — must NEVER have RAMRDAUX + RAMWRAUX simultaneously active
-; (code fetch would read from aux, causing crash)
+; LEGACY PATTERN — current blitImage; Design C replaces the RAMRDAUX read entirely
+; Per DHGR column — code in $0200–$BFFF must not be executing when RAMRDAUX fires
 
-    ; STEP 1: Read aux sprite byte
+    ; STEP 1: Read aux sprite byte (ELIMINATED in Design C)
     STA   $C003         ; RAMRDAUX
     LDA   (ZP_AUXPTR_L),Y
-    TAX                 ; stash in X (or ZP_TMPBYTE)
+    TAX
     STA   $C002         ; RAMRDMAIN — restore before any write
 
     ; STEP 2: Write aux nibble to DHGR aux screen bank
     STA   $C005         ; RAMWRAUX
     STX   (ZP_BUFFER),Y
-    STA   $C004         ; RAMWRMAIN — restore
+    STA   $C004         ; RAMWRMAIN
 
     ; STEP 3: Write main nibble to DHGR main screen bank
     LDA   main_sprite_byte
