@@ -327,6 +327,9 @@ enables scripted memory inspection for byte-level validation without manual inte
   framebuffer, not the DHGR graphics framebuffer. VRAM content must be verified via `m`
   memory dumps (DHGR VRAM $2000+ showed terrain pattern `51 4A 51 4A...` confirming active
   rendering). Visual DHGR screenshots require Jace GUI mode.
+- **HGR bytes-per-row formula**: `ceil(W_pixels / 8)` (NOT 7px/byte as in DHGR screen columns).
+  A 12-pixel-wide sprite = ceil(12/8) = 2 bytes per row. HGR sprite header byte 0 is pixel width, not column count.
+  DHGR sprite header byte 0 is bytes-per-row (same value as HGR: ceil(pixel_width/8)).
 
 ---
 
