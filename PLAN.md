@@ -12,9 +12,9 @@
 
 > Update this section at the start of each session. It is the primary session-resume signal.
 
-**Current story**: Story 6 — FPS Benchmark Baseline
+**Current story**: Story 7 — Rendering Optimizations
 **Status**: NOT STARTED
-**Last session**: 2026-03-27 (Story 5 completed)
+**Last session**: 2026-03-28 (Story 6 completed, baseline FPS = 5.9)
 **Blocking issues**: None
 
 ---
@@ -31,8 +31,10 @@
 | Story 4 CHOP1 MD5 (stable) | da860d5d218f567b9777b940243f97c7 | S4 | 2026-03-27 |
 | Story 5 CHOP1 MD5 (stable) | 552f3d751ccc05d98d5a6e62587ce09a | S5 | 2026-03-27 |
 | Story 5 CHOP0 MD5 (stable) | 4a2ae49116907507040f511eacd52ce0 | S5 | 2026-03-27 |
-| DHGR baseline cycles/frame | (capture in Story 6) | S6 | — |
-| DHGR baseline FPS | (compute in Story 6) | S6 | — |
+| Story 6 CHOP1 MD5 (stable) | d4e8fd677d79ffcaebfd08d1d97a982c | S6 | 2026-03-28 |
+| Story 6 CHOP0 MD5 (stable) | 6bdf07482d9feca23f8c337733c7f723 | S6 | 2026-03-28 |
+| DHGR baseline cycles/frame | ~172,414 | S6 | 2026-03-28 |
+| DHGR baseline FPS | ~5.9 FPS | S6 | 2026-03-28 |
 | Post-opt-7a cycles/frame | (capture in Story 7a) | S7 | — |
 | Post-opt-7b cycles/frame | (capture in Story 7b) | S7 | — |
 | Post-opt-7c cycles/frame | (capture in Story 7c) | S7 | — |
@@ -52,6 +54,23 @@ Stretch target: >= 25 FPS (40,875 cycles/frame maximum)
 ## Session Notes
 
 > Append one entry per session. Newest at top.
+
+### Session 5 — 2026-03-28
+- Story 6 completed: FPS benchmark baseline measured at ~5.9 FPS (172,414 cycles/frame).
+- Two bugs fixed during stabilization:
+  1. `.org $1FF6` removed from choplifter.s — the directive was setting auxReadByte label address
+     to $1FF6 but bytes physically landed at their natural LOCODE position. JSR called $1FF6
+     (unwritten memory = zeros = BRK). auxReadByte now at natural position $1AE8 (post-fix).
+  2. blitImage/blitImageFlip right-edge column overflow — no clamp on Y before dual-bank write.
+     DHGR page 2 bottom row at $5FD0; Y=$30 (col 48) → $6000 = HICODE jump table corruption.
+     Fix: `cpy #40 / bcs skip` added in both blitImageColLoop and blitImageFlipColLoop.
+     Also fixes blitImageFlip left-underflow: Y=$FF after dey from 0 → $FF >= 40 → skip.
+- auxTrampolineBase updated: $1AE0 → $1AE8 after 8 bytes of column clamp code added.
+- FPS counter confirmed at $68E5/$68E6 (not $7000/$7001 which = BOUNDS_LEFT_L/H game constants).
+- Jace terminal notes: use `q` to exit monitor mode (not `b`); `b` sets a breakpoint.
+  Jace memory reads while RAMWRAUX active return AUX bank values — not actual main corruption.
+- Story 6 CHOP1 MD5 (stable): d4e8fd677d79ffcaebfd08d1d97a982c
+- Story 6 CHOP0 MD5 (stable): 6bdf07482d9feca23f8c337733c7f723
 
 ### Session 4 — 2026-03-27
 - Story 5 completed: all 128 sprites converted and loaded; auxReadByte trampoline enables
@@ -443,7 +462,7 @@ Both screenshots reviewed multimodally for correct sprite orientation.
 
 ### Story 6: FPS Benchmark Baseline
 
-**Status**: NOT STARTED
+**Status**: DONE — 2026-03-28, baseline 5.9 FPS
 **Prerequisite**: Story 5 complete and verified.
 
 **Scope**: Instrument the main render loop with a cycle counter. Record cycles-per-frame and FPS baseline. This is the regression baseline for all Story 7 optimizations.

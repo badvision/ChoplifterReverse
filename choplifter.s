@@ -314,7 +314,7 @@ startDemoMode:				; $09c7
         jsr     jumpFlipPageMask
 
 ; Main demo loop- this is duplicate of the main game loop, slightly stripped down for just what the self-playing demo needs
-mainLoopDemo:			; $0a04
+mainLoopDemo:			; $09ff
 		inc     ZP_FRAME_COUNT			; Check if self-play is done
         lda     ZP_FRAME_COUNT
         cmp     #$E0					; Demo is 224 frames out, then 224 frames back. Same flight control table is used both ways. Neat!
@@ -591,7 +591,7 @@ renderSortieBanner:
 ;
 ; MAIN GAME LOOP
 ;
-mainLoop:										; $0c1a
+mainLoop:										; $0c0c
         inc     ZP_FRAME_COUNT
         lda     #$00
         sta     HOSTAGE_FIRSTLOAD
@@ -606,7 +606,7 @@ mainLoopNormal:
         adc     HOSTAGES_KILLED			; Check for game failure on hostage deaths
         cmp     #$40
         bne     mainLoopNoLossYet
-        jmp     (ZP_INDIRECT_JMP_L)		; Goes to 0c92 (gameOverLoss) in normal gameplay
+        jmp     gameOverLoss			; Story 6: direct JMP — ZP $24 clobbered by 80-col IRQ ($C8CF: STA $24)
 
 mainLoopNoLossYet:
 		lda     ZP_DEATHTIMER			; Track death animation
@@ -1435,7 +1435,12 @@ blitRect:		; $1224
         sta     ZP_IMAGE_W
 
 blitRectLoop:  						; Blit the pixels — DHGR dual-bank write
+		; Clamp ZP_RENDER_CURR_Y to 0..191 to prevent row table overflow into $60xx HICODE.
 		ldx     ZP_RENDER_CURR_Y
+        cpx     #192
+        bcc     :+
+        ldx     #191
+:
         lda     dhgrRowLo,x             ; DHGR row table (was hiResRowsLow)
         sta     blitRectBlit+1          ; patch aux write lo
         sta     blitRectBlit2+1
@@ -1493,7 +1498,8 @@ blitRectBlit2:			;
 blitRectAuxDone:
 		; Aux pass complete — now write same row to main bank
         sta     $C004                   ; RAMWRMAIN — restore before any IRQ can fire
-        cli                             ; re-enable interrupts
+        ; Story 6: No CLI here. initRendering permanently sets SEI; CLI would re-enable IRQs,
+        ; allowing the 80-col card VBL handler to reach the $C27D keyboard busy-wait.
         ldx     ZP_IMAGE_W
         ldy     ZP_FILL_BYTE            ; restore starting column
         tya
@@ -1606,7 +1612,45 @@ initRendering:		; $1296
         INC     ZP_DHGR_ROW_H
         JMP     @vramClearMain
 @vramClearMainDone:
-        CLI                             ; re-enable interrupts (disabled for RAMWRAUX safety)
+        ; Story 6: Keep interrupts DISABLED for the entire game session.
+        ; Original Choplifter is 100% polling-based and never relied on VBL IRQs.
+        ; ProDOS disk I/O is complete before initRendering runs, so SEI is safe to keep.
+        ; The per-function SEI/CLI guards in blitRect/screenFill still protect RAMWRAUX.
+        SEI                             ; ensure interrupts remain disabled
+
+        ; Story 6: Turn off 80COL soft switch and disable 80-col card dispatch.
+        ; AN3 is latched and persists even with 80COL OFF.
+        ; $07F8 is the slot-3 dispatch byte used by the ROM's CR/LF handler (at $FD28: LSR $07F8)
+        ; to detect the 80-col card. Writing $00 makes the ROM take the 40-col CR path,
+        ; bypassing the 80-col card firmware and its keyboard busy-wait at $C27D.
+        ; $C00C (80COL OFF) clears the 80-col soft switch. Note: $C00E is ALT CHAR OFF,
+        ; not 80COL OFF. The correct address is $C00C (off) / $C00D (on).
+        STA     $C00C                   ; 80COL OFF (soft switch) — correct address
+        LDA     #$00
+        STA     $07F8                   ; clear 80-col slot dispatch: ROM takes 40-col CR path
+
+        ; Story 6: Set CSW = $C368. This simultaneously solves two 80-col firmware hangs:
+        ;
+        ; PROBLEM 1 — COUT path hang ($C8E8 JSR $C83B cursor blink wait):
+        ;   Game outputs a character → COUT ($FDED) → JMP ($0036) = JMP $C368.
+        ;   $C368 in Apple IIe internal ROM = $60 (RTS). COUT returns immediately.
+        ;   No 80-col firmware is entered via COUT. Character output is silently discarded.
+        ;
+        ; PROBLEM 2 — $FBB4 path spin ($C1A0 BNE spin-loop):
+        ;   $FD0C → JSR $FBB4 → JMP $C100 → 80-col firmware.
+        ;   Firmware at $C1A0: LDA $37 / CMP #$C3 / BNE spin.
+        ;   With $0037=$C3 (CSW hi = $C3 from $C368), check passes →
+        ;   JMP $C832: LDA #$05 / STA $38 / LDA #$C3 / STA $39 / RTS.
+        ;   Firmware returns to caller via the $C832 RTS. No hang.
+        ;
+        ; WHY $C368: Apple IIe internal ROM byte at $C368 = $60 (RTS). Confirmed by
+        ; Jace memory dump at 1M cycles. hi byte = $C3 satisfies the $C1A0 CMP check.
+        ; $C368 is in the 80-col card firmware ROM area (read-only with SETINTCXROM),
+        ; so this value is stable and cannot be accidentally overwritten.
+        LDA     #$68
+        STA     $36                     ; CSW lo = $68
+        LDA     #$C3
+        STA     $37                     ; CSW hi = $C3 → CSW = $C368 (80-col ROM RTS stub)
 
         LDA     #$00
         STA     ZP_PAGEMASK             ; ensure page 1 selected
@@ -1637,6 +1681,13 @@ enableHiResGraphics:			; $12c1
 		sta   $C054         ; PAGE 1
 		sta   $C004         ; RAMWRMAIN
 		sta   $C002         ; RAMRDMAIN
+		; Story 6: Disable 80-col text mode after AN3 is latched.
+		; AN3 ($C05E) is a latch — stays set even after 80COL is turned off.
+		; With 80COL OFF, text character output bypasses the 80-col card firmware
+		; entirely (goes to 40-col path), avoiding the keyboard busy-wait at $C83B
+		; that the 80-col card runs on every cursor blink during text display.
+		; DHGR graphics continue to work because AN3 and HIRES/FULLSCREEN are set.
+		sta   $C00C         ; 80COL OFF — $C00C is correct (not $C00E which is ALT CHAR OFF)
 		rts
 
 
@@ -1667,7 +1718,14 @@ flipPageMask0:
 
 
 ; Flips the hardware graphics page
-pageFlip:						; $12e3
+pageFlip:						; $12d9
+		; Story 6: 16-bit frame counter at FPS_COUNTER_L/H ($68E5/$68E6) — incremented every rendered frame
+		; NOTE: $7000/$7001 = BOUNDS_LEFT_L/H (game constants) — do NOT use for the counter.
+		; $68E5/$68E6 are in the 795-byte unused region $68E5–$6BFF in HICODE.
+		inc     FPS_COUNTER_L
+		bne     @pageFlipCountLo
+		inc     FPS_COUNTER_H
+@pageFlipCountLo:
 		pha
 		lda     ZP_PAGEMASK
 		bne     pageFlip1
@@ -1734,6 +1792,11 @@ screenFill:
         STA     ZP_DHGR_ROW_H
 
         ; Write to aux bank (holds left nibbles of each DHGR pixel pair)
+        ; SEI/CLI: block ProDOS 1/60-sec timer IRQ during RAMWRAUX window.
+        ; If IRQ fires during RAMWRAUX, the 6502 pushes return address to AUX stack,
+        ; but RTS/RTI pops from MAIN stack (when RAMWRMAIN is restored by IRQ handler),
+        ; causing execution to jump to garbage. Same fix as blitRect (Story 3).
+        SEI
         STA     $C005                   ; RAMWRAUX — value written is ignored
         LDA     ZP_FILL_BYTE            ; reload fill byte after STA affected flags
         LDY     #39
@@ -1743,7 +1806,9 @@ screenFill:
         BPL     @sfAuxLoop
 
         ; Write to main bank (holds right nibbles of each DHGR pixel pair)
-        STA     $C004                   ; RAMWRMAIN — value written is ignored
+        STA     $C004                   ; RAMWRMAIN — restore before any IRQ can fire
+        ; Story 6: No CLI here. initRendering permanently sets SEI; CLI would re-enable IRQs,
+        ; allowing the 80-col card VBL handler to reach the $C27D keyboard busy-wait.
         LDY     #39
 @sfMainLoop:
         STA     (ZP_DHGR_ROW_L),Y
@@ -2044,6 +2109,10 @@ nextImageDestRow_Break:
 		sta     ZP_BITSCRATCH					; Cache first byte for next row
 
         ldx     ZP_RENDER_CURR_Y		; Calculate hires rows to render at
+        cpx     #192                    ; clamp to 0..191: index 192+ hits zero-pad -> $60xx writes
+        bcc     :+
+        ldx     #191
+:
         lda     hiResRowsLow,x
         sta     ZP_HGRPTR_L
         lda     hiResRowsHigh,x
@@ -2631,7 +2700,13 @@ blitImageGuardPass:
 
 blitImageRowLoop:
         ; Look up DHGR row base address for current row
+        ; Clamp ZP_RENDER_CURR_Y to 0..191: values >= 192 hit zero-padded table area
+        ; and (with ZP_PAGEMASK XOR) produce $60xx addresses in HICODE.
         ldx     ZP_RENDER_CURR_Y
+        cpx     #192
+        bcc     :+
+        ldx     #191
+:
         lda     dhgrRowLo,x
         sta     ZP_DHGR_ROW_L
         lda     dhgrRowHi,x
@@ -2644,26 +2719,30 @@ blitImageRowLoop:
 blitImageColLoop:
         ; X = sprite column, Y = screen column
         sty     ZP_DRAWSCRATCH1         ; save screen column Y
+        stx     ZP_DRAWSCRATCH2         ; save sprite column X (auxReadByte clobbers X)
         txa
         tay                             ; Y = sprite column for AUX read
-        ; auxReadByte: reads AUX[(ZP_AUX_SPRITE_PTR),Y] → X
+        ; auxReadByte: reads AUX[(ZP_AUX_SPRITE_PTR),Y] → X. Clobbers A,X. Preserves Y.
         jsr     auxReadByte
+        txa                             ; A = pixel byte (test before restoring regs)
+        ldx     ZP_DRAWSCRATCH2         ; restore sprite column X
         ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
-        beq     blitImageSkipPx         ; X=0 means transparent pixel
-        txa
+        beq     blitImageSkipPx         ; A==0: transparent pixel (Z set by txa above)
+        cpy     #40                     ; right-edge clamp: Y>=40 is off-screen right
+        bcs     blitImageSkipPx
         and     #$7F                    ; enforce DHGR bit 7 = 0
         sei                             ; block IRQ for dual-bank write
         sta     $C005                   ; RAMWRAUX
         sta     (ZP_DHGR_ROW_L),y      ; write aux DHGR bank
         sta     $C004                   ; RAMWRMAIN
-        cli
+        ; Story 6: No CLI here — SEI from initRendering is permanent.
         sta     (ZP_DHGR_ROW_L),y      ; write main DHGR bank (same byte)
 
 blitImageSkipPx:
         ldy     ZP_DRAWSCRATCH1         ; screen column
         iny                             ; advance screen column
         sty     ZP_DRAWSCRATCH1
-        inx                             ; advance sprite column
+        inx                             ; advance sprite column (X = true sprite col)
         cpx     ZP_IMAGE_W
         bcc     blitImageColLoop
 
@@ -2734,7 +2813,12 @@ blitImageFlipGuardPass:
 
 blitImageFlipRowLoop:
         ; Look up DHGR row base address for current row
+        ; Clamp to 0..191 to prevent $60xx HICODE writes via zero-padded table area.
         ldx     ZP_RENDER_CURR_Y
+        cpx     #192
+        bcc     :+
+        ldx     #191
+:
         lda     dhgrRowLo,x
         sta     ZP_DHGR_ROW_L
         lda     dhgrRowHi,x
@@ -2747,26 +2831,30 @@ blitImageFlipRowLoop:
 blitImageFlipColLoop:
         ; X = sprite column (left-to-right), Y = screen column (right-to-left)
         sty     ZP_DRAWSCRATCH1         ; save screen column Y
+        stx     ZP_DRAWSCRATCH2         ; save sprite column X (auxReadByte clobbers X)
         txa
         tay                             ; Y = sprite column for AUX read
-        ; auxReadByte: reads AUX[(ZP_AUX_SPRITE_PTR),Y] → X
+        ; auxReadByte: reads AUX[(ZP_AUX_SPRITE_PTR),Y] → X. Clobbers A,X. Preserves Y.
         jsr     auxReadByte
+        txa                             ; A = pixel byte (test before restoring regs)
+        ldx     ZP_DRAWSCRATCH2         ; restore sprite column X
         ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
-        beq     blitImageFlipSkipPx     ; X=0 means transparent pixel
-        txa
+        beq     blitImageFlipSkipPx     ; A==0: transparent pixel (Z set by txa above)
+        cpy     #40                     ; right-edge clamp: Y>=40 is off-screen right
+        bcs     blitImageFlipSkipPx     ; also catches Y=$FF (left underflow after dey from 0)
         and     #$7F                    ; enforce DHGR bit 7 = 0
         sei                             ; block IRQ for dual-bank write
         sta     $C005                   ; RAMWRAUX
         sta     (ZP_DHGR_ROW_L),y      ; write aux DHGR bank
         sta     $C004                   ; RAMWRMAIN
-        cli
+        ; Story 6: No CLI here — SEI from initRendering is permanent.
         sta     (ZP_DHGR_ROW_L),y      ; write main DHGR bank (same byte)
 
 blitImageFlipSkipPx:
         ldy     ZP_DRAWSCRATCH1         ; screen column
         dey                             ; decrement screen column (flip direction)
         sty     ZP_DRAWSCRATCH1
-        inx                             ; advance sprite column (left-to-right)
+        inx                             ; advance sprite column (left-to-right, X = true sprite col)
         cpx     ZP_IMAGE_W
         bcc     blitImageFlipColLoop
 
@@ -2865,6 +2953,8 @@ pixelMasksLeft:		; $1d8a Left end of byte, decreasing
 	.byte	$00,$7e,$7c,$78,$70,$60,$40,$00
 
 ; AUX memory pixel read trampoline (10 bytes).
+; Address is determined by natural assembly position — see choplifter.lst for actual address.
+; loader.s auxTrampolineBase must match the assembled address shown in choplifter.lst.
 ; The loader copies these 10 bytes to AUX at the same address (auxReadByte)
 ; via RAMWRAUX so that RAMRDAUX opcode fetches execute correctly.
 ; Calling convention: Y = sprite column index (0..width-1),
@@ -3669,7 +3759,7 @@ spawnJetFinalize:
 
 spawnJetFatal:
 		jsr     $fbdd				; Beep and crash
-        brk
+        rts
 
 jetDifficultyTable:		; $6536 Modifies jet trickiness at higher levels
 		.byte	$00,$00,$2C,$44
@@ -3755,7 +3845,7 @@ spawnAlienFinalize:
 
 spawnAlienFatal:
 		jsr		$fbdd				; Beep and die
-		brk
+		rts
 
 
 ; The main update routine for a tank entity
@@ -4229,10 +4319,14 @@ alienSpawnRateTable:		; $68e1 How many aliens to spawn at each game level
 
 .org $68e5
 
+; Story 6: FPS frame counter — 16-bit little-endian at $68E5/$68E6
+; Incremented by pageFlip on every rendered frame. Safe: this is the 795-byte unused region.
+; FPS = delta_frames * 1,021,875 / delta_cycles  (Jace: read at two 5M-cycle points)
+FPS_COUNTER_L:	.byte $00	; $68E5 low byte of frame count
+FPS_COUNTER_H:	.byte $00	; $68E6 high byte of frame count
 
-
-; 795 unused bytes from $68e5 to $6c00
-UNUSED 795
+; 793 unused bytes from $68e7 to $6c00
+UNUSED 793
 
 
 .org $6c00
@@ -5721,7 +5815,7 @@ allocateEntity:			; $792f
 allocateEntityFatal:	; Ran out of entities! Dan must have had a bug with this so he's asserting here
         jsr     $fbdd			; Beep
         jsr     $fbdd			; Beep
-        brk
+        rts
 
 
 
@@ -5779,7 +5873,7 @@ updateEntityListFatal:
 		jsr     $fbdd		; Beep three times and crash
         jsr     $fbdd		; This must have been a bug at some point, hence the aggressive debug tool
         jsr     $fbdd
-        brk
+        rts
 
 
 ; Runs through master entity index list and removes holes. Also

@@ -331,6 +331,35 @@ enables scripted memory inspection for byte-level validation without manual inte
   A 12-pixel-wide sprite = ceil(12/8) = 2 bytes per row. HGR sprite header byte 0 is pixel width, not column count.
   DHGR sprite header byte 0 is bytes-per-row (same value as HGR: ceil(pixel_width/8)).
 
+### Story 6 findings
+- **blitImage/blitImageFlip right-edge column overflow**: The inner column loop `STA (ZP_DHGR_ROW_L),Y`
+  had no right-edge clamp. DHGR page 2 bottom row (dhgrRowHi[0] XOR $60 = $5F, dhgrRowLo[0] = $D0)
+  base address = $5FD0. Y=$30 (column 48) → $5FD0 + $30 = $6000 — overwrites the HICODE jump table.
+  Fix: added `cpy #40 / bcs blitImageSkipPx` in both `blitImageColLoop` and `blitImageFlipColLoop`
+  before any dual-bank write. Also catches left-underflow in flip mode (Y=$FF after dey from 0,
+  since $FF >= 40 = bcs taken).
+- **auxTrampolineBase address is fragile**: Every instruction added or removed before `auxReadByte`
+  in LOCODE shifts its assembled address. After the right-edge clamp (4 bytes added: `cpy #40` + `bcs`
+  in each of two loops = 8 bytes), `auxReadByte` shifted from $1AE0 to $1AE8. loader.s
+  `auxTrampolineBase` must be updated after every LOCODE code change. Always verify against
+  choplifter.lst grep for `auxReadByte:`.
+- **Jace monitor `run` command not valid in monitor mode**: Must exit monitor with `q` before
+  issuing `run`. `b` in monitor mode sets a breakpoint (not "back"). `q` or `back` returns to main mode.
+- **Jace memory read mid-RAMWRAUX window**: Stopping execution while RAMWRAUX is active ($C005 set)
+  causes the monitor to read AUX memory at the inspected address. $6000 in AUX holds DHGR screen
+  data ($00/$FF alternating), not the jump table. Apparent corruption at stop points is a read-bank
+  artifact, not actual main memory corruption. Confirmed via `watch 6000` showing no WRITEs.
+- **Story 6 FPS baseline**: **~5.9 FPS** (measured 2026-03-28).
+  Method: `FPS_COUNTER_L/H` at $68E5/$68E6 (16-bit, incremented in `pageFlip` at $138C).
+  Data: 29 frames in 5,000,000 cycles (15M→20M cycle interval, post-startup steady state).
+  FPS = 29 × 1,021,875 / 5,000,000 = 5.93. Cycles/frame ≈ 172,414.
+  This is the unoptimized baseline. Story 7 targets must bring this above 20 FPS.
+  Note: 20 FPS target requires 51,094 cycles/frame — a 3.4× improvement over baseline.
+- **SEI is permanent** during gameplay: `initRendering` sets SEI and never clears it.
+  ProDOS 1/60-sec timer IRQ is permanently blocked from the moment rendering starts.
+  This is intentional (prevents RAMWRAUX IRQ hazard) but removes the vsync-based timing
+  that the original game relied on. FPS is purely cycle-count driven.
+
 ---
 
 ## Conversion Roadmap
@@ -345,13 +374,14 @@ Story 2  Row tables + dual-bank write infrastructure (12-stripe test)  [DONE —
 Story 3  Static background: sky, stars, terrain, moon, houses  [DONE — 2026-03-27]
 Story 4  blitImage ported — single sprite (helicopter head-on only)  [DONE — 2026-03-27]
 Story 5  All sprites converted, auxReadByte trampoline, CHOPAUX pipeline  [DONE — 2026-03-27]
-Story 6  FPS benchmark baseline recorded at $7000/$7001
+Story 6  FPS benchmark baseline recorded at $68E5/$68E6  [DONE — 2026-03-28, 5.9 FPS]
 Story 7  Three optimizations: byte-aligned sprites → fix erase pass → hot data locality
 Story 8  Integration regression: title, sortie, gameplay, game-over; final FPS >= 20
 ```
 
 Target: >= 20 FPS (51,094 cycles/frame). Stretch: >= 25 FPS (40,875 cycles/frame).
-FPS formula: 1,021,875 / [cycles_per_frame at $7000/$7001 as 16-bit little-endian].
+FPS formula: frames_delta × 1,021,875 / cycles_delta (using FPS_COUNTER_L/H at $68E5/$68E6).
+Note: $7000/$7001 = BOUNDS_LEFT_L/H (game constants) — NOT the FPS counter address.
 
 ---
 

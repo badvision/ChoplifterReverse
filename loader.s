@@ -133,26 +133,26 @@ initVectors:
 	; None of these vectors ever change during gameplay, so making them an indirection
 	; was probably a development and debugging tool.
 	lda		#$c7					; Initialize game start vector
-	sta		$2a		; ZP_LOADERVECTOR_L
+	sta		$2a		; ZP_LOADERVECTOR_L  = startDemoMode $09c7 (unchanged)
 	lda		#$09
 	sta		$2b		; ZP_LOADERVECTOR_H
 	lda		#$1f
-	sta		$28		; ZP_STARTTITLE_JMP_L
+	sta		$28		; ZP_STARTTITLE_JMP_L = startTitleSequence $081f (unchanged)
 	lda		#$08
 	sta		$29		; ZP_STARTTITLE_JMP_H
-	lda		#$5f
+	lda		#$5f					; startNewGame $0b5f (unchanged)
 	sta		$3a		; ZP_GAMESTART_JMP_L
 	lda		#$0b
 	sta		$3b		; ZP_GAMESTART_JMP_H
-	lda		#$13
+	lda		#$13					; after sortie banner $0c13 (unchanged)
 	sta		$3c		; ZP_NEWSORTIE_JMP_L
 	lda		#$0c
 	sta		$3d		; ZP_NEWSORTIE_JMP_H
-	lda		#$9b
+	lda		#$9b					; beginSortie $0b9b (unchanged)
 	sta		$4e		; ZP_GAMEINIT_L
 	lda		#$0b
 	sta		$4f		; ZP_GAMEINIT_H
-	lda		#$92
+	lda		#$92					; gameOverLoss $0c92 (unchanged)
 	sta		$24		; ZP_INDIRECT_JMP_L
 	lda		#$0c
 	sta		$25		; ZP_INDIRECT_JMP_H
@@ -173,10 +173,19 @@ initVectors:
 	lda		#$08
 	sta		$305
 
+	; Story 6: SETINTCXROM — maps Apple IIe internal ROM over $C100-$CFFF.
+	; Kept as defensive hardening; primary IRQ fix is SEI in initRendering (choplifter.s).
+	; AN3 ($C05E), AUX memory switching ($C001/$C003-$C005), and DHGR display
+	; remain functional — they are main-logic soft switches, not card firmware.
+	sta		$C007				; SETINTCXROM — map internal ROM over slot firmware
+
 	; Mirror auxReadByte trampoline to AUX memory so RAMRDAUX is safe during blitImage.
-	; auxReadByte lives at $1AA7 in CHOP0 (already loaded). Copy 10 bytes to AUX $1AA7.
+	; auxReadByte address is determined by natural assembly position in choplifter.s.
+	; Update this constant whenever LOCODE code before auxReadByte is added/removed.
+	; Verify by checking choplifter.lst for the assembled address of auxReadByte.
 	; RAMWRAUX: writes go to AUX, reads still come from MAIN — safe for this copy loop.
-auxTrampolineBase = $1AA7
+auxTrampolineBase = $1AE8	; auxReadByte natural position — verify in choplifter.lst
+
 auxTrampolineLen  = 10
 	ldy		#auxTrampolineLen - 1
 	sei
