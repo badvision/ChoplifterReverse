@@ -48,12 +48,11 @@ $A100–$A3FF  (reserved for future DHGR row tables if needed; currently unused)
 $A102–$AB1B  CHOP1 occupies this range (19228 bytes, HGR sprite pixel data — not yet DHGR)
 $AB1C–$AD1B  DHGR sprite headers (128 × 4 bytes: W, H, aux_ptr_lo, aux_ptr_hi)
 $AD1C–$BFFF  ~4.8KB available for expansion (ProDOS boundary irrelevant post-load)
-$D000–$D???  LC RAM: aux_bytes sprite table (5339 bytes) — Design C target
-$D???–$E???  LC RAM: main_bytes sprite table (5339 bytes) — Design C target
-$E???+       LC RAM: inner loop code (~100 bytes), other hot-path code
+$D000–$D03F  LC RAM: Pass 1 inner loop code (~50 bytes) + other hot-path code
+$D040+       LC RAM: available for future hot-path expansion
 
 AUX MEMORY (not executable — data only)
-AUX $6100–$75DA  DHGR sprite pixel data — current layout (pre-Design C)
+AUX $6100–$75DA  DHGR sprite pixel data — aux bytes (natural bank storage, unchanged)
 AUX $75DB–$BFFF  ~18KB available
 ```
 
@@ -102,36 +101,59 @@ in Story 1. $C05E is the IIe standard; $C07E appears in some references.
 
 ---
 
-## Memory Management Strategy — Design C (Consensus 2026-03-28)
+## Memory Management Strategy — Two-Pass Per-Row (Consensus 2026-03-28)
 
-Outcome of 5-analyst / 5-architect Socratic deliberation. Unanimous (5/5).
+Outcome of 5-analyst / 5-architect Socratic deliberation (unanimous 5/5 on Design C),
+refined by user-proposed two-pass variant. Two-pass adopted as primary strategy.
 
 ### Core Architecture
 
-Sprite data moves to **dual-byte LC RAM tables** ($D000+). The inner loop reads both aux
-and main bytes from LC RAM via absolute indexed addressing — **RAMRDAUX is never used in the
-hot path**. LC reads are independent of RAMRDAUX state (hardware-confirmed: LC routing is a
-separate hardware controller from RAMRDAUX; verified in RAM128k.java).
+Sprite data stored in **natural banks**: aux bytes in AUX memory ($6100+), main bytes in
+MAIN memory ($AD1C+ or LOCODE area). **RAMRDAUX is never used in the hot path.**
 
-### Inner Loop Design (~37 cycles/column, unrollable to ~28)
+Each row is rendered in two passes:
+- **Pass 1** (RAMRDAUX + RAMWRAUX active): reads AUX sprite bytes from AUX memory, writes
+  to AUX DHGR screen. Pass 1 inner loop code MUST be in LC RAM ($D000+) because RAMRDAUX
+  routes opcode fetches from $0200–$BFFF to AUX.
+- **Pass 2** (default state — no bank switches): reads MAIN sprite bytes from MAIN memory,
+  writes to MAIN DHGR screen. Pass 2 code can live anywhere in LOCODE.
+
+Only **4 bank switches per row** total (vs 2×W in single-pass interleaved). Both loops
+are structurally identical — 18 cycles/column each.
+
+LC RAM independence is hardware-confirmed: LC routing ($D000–$FFFF) is a separate hardware
+controller from RAMRDAUX. `LDA lc_code,X` and opcode fetches from LC RAM are unaffected by
+RAMRDAUX state (verified: RAM128k.java `buildReadConfiguration()` — LC overlay applied
+unconditionally after RAMRD fill, lines 291–304).
+
+### Inner Loop Design (~18 cycles/column per pass)
 
 ```asm
-; Preconditions: RAMWRAUX active at row entry (STA $C005 once per row)
-; X = sprite column index, Y = screen column index
-; ZP_DHGR_ROW_L/H = current destination row pointer
+; ── Per-row setup (once per row) ──────────────────────────────────────────
+    STA   $C003          ; 4 — RAMRDAUX  (CPU now fetches opcodes from AUX for $0200–$BFFF)
+    STA   $C005          ; 4 — RAMWRAUX  (writes → AUX DHGR)
+    LDY   #0             ; 2 — reset column index
 
-loop:
-    LDA   lc_aux_table,X     ; 4 — aux byte from LC RAM (RAMRDAUX irrelevant)
-    STA   (ZP_DHGR_ROW_L),Y  ; 6 — write to AUX DHGR bank
-    LDA   lc_main_table,X    ; 4 — main byte from LC RAM
-    STA   $C004               ; 4 — RAMWRMAIN
-    STA   (ZP_DHGR_ROW_L),Y  ; 6 — write to MAIN DHGR bank
-    STA   $C005               ; 4 — restore RAMWRAUX for next column
-    INX                       ; 2
+; ── Pass 1 inner loop (MUST be in LC RAM) — 18 cycles/column ──────────────
+pass1_loop:
+    LDA   (aux_sprite_ptr),Y ; 5 — read from AUX sprite data (RAMRDAUX active)
+    STA   (ZP_DHGR_ROW_L),Y  ; 6 — write to AUX DHGR screen (RAMWRAUX active)
     INY                       ; 2
-    CPX   sprite_width        ; 2
-    BNE   loop                ; 3 (taken)
-; = 37 cycles/column (single-pass interleaved)
+    CPY   sprite_width        ; 2
+    BNE   pass1_loop          ; 3 (taken)
+
+; ── Per-row teardown ───────────────────────────────────────────────────────
+    STA   $C002          ; 4 — RAMRDMAIN
+    STA   $C004          ; 4 — RAMWRMAIN
+    LDY   #0             ; 2 — reset column index
+
+; ── Pass 2 inner loop (any location — zero bank switches) — 18 cycles/column
+pass2_loop:
+    LDA   (main_sprite_ptr),Y ; 5 — read from MAIN sprite data
+    STA   (ZP_DHGR_ROW_L),Y   ; 6 — write to MAIN DHGR screen
+    INY                        ; 2
+    CPY   sprite_width         ; 2
+    BNE   pass2_loop           ; 3 (taken)
 ```
 
 ### What Is Eliminated vs. Current (~90 cycles/column opaque)
@@ -142,17 +164,30 @@ loop:
 | RAMRDAUX trampoline body | 21 |
 | ZP_DRAWSCRATCH1/2 save/restore | 12 |
 | txa/tay/txa register shuffle | 6 |
-| **Total eliminated** | **~51 cycles/column** |
+| Per-column RAMWRAUX/RAMWRMAIN toggle (Pass 2) | 8 |
+| **Total eliminated** | **~59 cycles/column (Pass 2)** |
 
-RAMWRAUX/RAMWRMAIN toggle (8 cycles/column) is unavoidable for correct dual-bank writes.
+Pass 1 still pays 8 cycles/row for the RAMWRAUX write bank (unavoidable for AUX writes),
+but this is amortized across the whole row rather than paid per column.
 
 ### Safety Invariants (mandatory in every blitImage/blitImageFlip commit)
 
 1. `STA $C002` (RAMRDMAIN) unconditionally at blitImage entry
-2. `STA $C004` (RAMWRMAIN) unconditionally at row loop entry
+2. `STA $C004` (RAMWRMAIN) unconditionally at blitImage entry
 3. `STA $C004 + STA $C002` at blitImage exit (clean state for callers)
-4. RAMRDAUX NEVER toggled inside the rendering hot path
-5. Dual-byte correctness: aux_byte ≠ main_byte for most DHGR colors (never same value to both banks)
+4. RAMRDAUX toggled only at pass boundaries (setup/teardown per row), never per-column
+5. Pass 1 loop code MUST reside in LC RAM — never in $0200–$BFFF
+6. Dual-byte correctness: aux_byte ≠ main_byte for most DHGR colors
+
+### Memory Layout for Sprite Data
+
+```
+MAIN memory: main sprite bytes at $AD1C+ (after sprite headers)
+             OR relocated into LOCODE slack
+AUX memory:  aux sprite bytes at AUX $6100–$75DA (existing layout — unchanged)
+LC RAM:      Pass 1 inner loop code (~50 bytes) + other hot-path code
+             No sprite tables needed in LC RAM (smaller LC footprint than Design C)
+```
 
 ### LC RAM Initialization (loader change required)
 
@@ -160,28 +195,33 @@ After all ProDOS MLI calls, before `JMP $0300`:
 ```asm
     LDA   $C084      ; LC write-enable (first access)
     LDA   $C084      ; LC write-enable (second access — hardware requirement)
-    ; copy 10,678 bytes sprite data to $D000+
+    ; copy pass1_loop code (~50 bytes) to $D000
 ```
 ProDOS overwrite is safe — user-confirmed irrelevant after load.
 
 ### Migration Path
 
-- **Phase 1**: Fix color bug (distinct aux/main bytes) + RAMWRAUX per-row for blitRect. Zero regression risk.
-- **Phase 2 (Design C)**: Reorganize sprite data to LC RAM dual-byte tables. Rewrite blitImageColLoop. Measure FPS.
-- **Phase 3** (if needed): 2× loop unroll for fixed-width paths → ~28 cycles/column.
+- **Phase 1**: Fix color bug (distinct aux/main bytes in blitRect). Zero regression risk.
+- **Phase 2**: Copy Pass 1 loop to LC RAM. Replace blitImageColLoop with two-pass structure.
+  Update loader to write-enable LC and copy loop code. Measure FPS.
+- **Phase 3** (if needed): Unroll pass loops for fixed-width sprites → ~14 cycles/column.
 
-### Performance Estimate
+### Performance Estimate (W=6 columns per row)
 
-- Single-pass baseline: ~35–37 cycles/column (vs ~90 current)
-- 2× unroll: ~28–30 cycles/column
+- Pass 1 overhead: 4+4+2 (setup) + 4+4+2 (teardown) = 20 cycles/row
+- Pass 1 loop: 6 × 18 = 108 cycles/row
+- Pass 2 loop: 6 × 18 = 108 cycles/row
+- Total per row: ~236 cycles (vs ~360 current at 6 cols × 90 cycles/col, modulo outer loop)
 - FPS target: 15–20 FPS range (exact figure requires profiling non-rendering overhead in Jace)
+- Design C single-pass was ~222 cycles/row for W=6; two-pass adds ~14 cycles but eliminates
+  all per-column bank switches in Pass 2 and reduces LC RAM footprint significantly
 
 ### Open Verification Tasks (require Jace confirmation before implementation)
 
-1. LC read independence — `LDA lc_table,X` correct regardless of RAMRDAUX state
+1. LC read independence — opcode fetches from $D000+ unaffected by RAMRDAUX state
 2. LC write-enable — double-access $C084 sequence enables writes in Jace
-3. Color table — verify Chen's (aux_byte, main_byte) values empirically
-4. Per-sprite stride — aux-main table offsets produce correct pixels for 2+ sprite widths
+3. Color table — verify (aux_byte, main_byte) pairs empirically for all 16 DHGR colors
+4. Pass 1 pointer — `(aux_sprite_ptr),Y` with RAMRDAUX reads from AUX correctly
 
 ---
 
