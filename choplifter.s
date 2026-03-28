@@ -2719,12 +2719,11 @@ blitImageRowLoop:
 blitImageColLoop:
         ; X = sprite column, Y = screen column
         sty     ZP_DRAWSCRATCH1         ; save screen column Y
-        stx     ZP_DRAWSCRATCH2         ; save sprite column X (auxReadByte clobbers X)
+        stx     ZP_DRAWSCRATCH2         ; save sprite column X
         txa
         tay                             ; Y = sprite column for AUX read
-        ; auxReadByte: reads AUX[(ZP_AUX_SPRITE_PTR),Y] → X. Clobbers A,X. Preserves Y.
-        jsr     auxReadByte
-        txa                             ; A = pixel byte (test before restoring regs)
+        jsr     auxReadByte             ; X = AUX pixel byte; clobbers A
+        txa                             ; A = pixel byte (Z set for transparent check)
         ldx     ZP_DRAWSCRATCH2         ; restore sprite column X
         ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
         beq     blitImageSkipPx         ; A==0: transparent pixel (Z set by txa above)
@@ -2831,12 +2830,11 @@ blitImageFlipRowLoop:
 blitImageFlipColLoop:
         ; X = sprite column (left-to-right), Y = screen column (right-to-left)
         sty     ZP_DRAWSCRATCH1         ; save screen column Y
-        stx     ZP_DRAWSCRATCH2         ; save sprite column X (auxReadByte clobbers X)
+        stx     ZP_DRAWSCRATCH2         ; save sprite column X
         txa
         tay                             ; Y = sprite column for AUX read
-        ; auxReadByte: reads AUX[(ZP_AUX_SPRITE_PTR),Y] → X. Clobbers A,X. Preserves Y.
-        jsr     auxReadByte
-        txa                             ; A = pixel byte (test before restoring regs)
+        jsr     auxReadByte             ; X = AUX pixel byte; clobbers A
+        txa                             ; A = pixel byte (Z set for transparent check)
         ldx     ZP_DRAWSCRATCH2         ; restore sprite column X
         ldy     ZP_DRAWSCRATCH1         ; restore screen column Y
         beq     blitImageFlipSkipPx     ; A==0: transparent pixel (Z set by txa above)
@@ -2969,10 +2967,9 @@ auxReadByte:
     sta     $C002               ; RAMRDMAIN ($8D/$02/$C0 fetched from AUX mirror)
     rts                         ; fetched from MAIN (RAMRDMAIN restored before this fetch)
 
-; Story 7c: dhgrRowLo/dhgrRowHi relocated from HICODE $8E01/$8EC1 to page-aligned LOCODE addresses.
-; auxReadByte ends at $1AF2. Pad 14 bytes to reach $1B00 (page boundary).
-        .res    14, $00             ; pad to page boundary $1B00
-
+; Story 7c: dhgrRowLo/dhgrRowHi at fixed LOCODE addresses $1B00/$1C00.
+; Use .res to pad to exact page boundaries. $1B00-* fills from current PC to $1B00.
+        .res    $1B00 - *, $00      ; pad from current PC to $1B00
 dhgrRowLo:
     ; 192 bytes — DHGR row low bytes (same HGR interleave formula, Row 0=bottom, Row 191=top)
     .byte $D0,$D0,$D0,$D0,$D0,$D0,$D0,$D0,$50,$50,$50,$50,$50,$50,$50,$50
@@ -2988,9 +2985,7 @@ dhgrRowLo:
     .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
     .byte $80,$80,$80,$80,$80,$80,$80,$80,$00,$00,$00,$00,$00,$00,$00,$00
 
-; dhgrRowLo ends at $1BC0. Pad 64 bytes to reach $1C00 (page boundary).
-        .res    64, $00             ; pad to page boundary $1C00
-
+        .res    $1C00 - *, $00      ; pad from current PC ($1BC0) to $1C00
 dhgrRowHi:
     ; 192 bytes — DHGR row high bytes (XOR ZP_PAGEMASK at runtime for page select)
     .byte $3F,$3B,$37,$33,$2F,$2B,$27,$23,$3F,$3B,$37,$33,$2F,$2B,$27,$23
@@ -3005,9 +3000,6 @@ dhgrRowHi:
     .byte $3E,$3A,$36,$32,$2E,$2A,$26,$22,$3E,$3A,$36,$32,$2E,$2A,$26,$22
     .byte $3D,$39,$35,$31,$2D,$29,$25,$21,$3D,$39,$35,$31,$2D,$29,$25,$21
     .byte $3C,$38,$34,$30,$2C,$28,$24,$20,$3C,$38,$34,$30,$2C,$28,$24,$20
-
-; dhgrRowHi ends at $1CC0. Remaining 832 unused bytes to end of LOCODE ($2000).
-        .res    832, $00
 
 
 ; Skip over high res pages

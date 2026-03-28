@@ -12,9 +12,9 @@
 
 > Update this section at the start of each session. It is the primary session-resume signal.
 
-**Current story**: Story 7 — Rendering Optimizations
+**Current story**: Story 8 — Full Game Integration
 **Status**: NOT STARTED
-**Last session**: 2026-03-28 (Story 6 completed, baseline FPS = 5.9)
+**Last session**: 2026-03-28 (Story 7 partial — 7c complete, 7a infeasible, 7b no-op)
 **Blocking issues**: None
 
 ---
@@ -35,9 +35,11 @@
 | Story 6 CHOP0 MD5 (stable) | 6bdf07482d9feca23f8c337733c7f723 | S6 | 2026-03-28 |
 | DHGR baseline cycles/frame | ~172,414 | S6 | 2026-03-28 |
 | DHGR baseline FPS | ~5.9 FPS | S6 | 2026-03-28 |
-| Post-opt-7a cycles/frame | (capture in Story 7a) | S7 | — |
-| Post-opt-7b cycles/frame | (capture in Story 7b) | S7 | — |
-| Post-opt-7c cycles/frame | (capture in Story 7c) | S7 | — |
+| Post-opt-7a cycles/frame | N/A — infeasible (AUX memory constraint) | S7 | 2026-03-28 |
+| Post-opt-7b cycles/frame | N/A — no ghost trails, erase pass correct | S7 | 2026-03-28 |
+| Post-opt-7c cycles/frame | ~172,414 (same as baseline — code quality only) | S7 | 2026-03-28 |
+| Story 7c CHOP0 MD5 (stable) | 2f5e6d0fa02bd0b5e022c73ae101ad1a | S7 | 2026-03-28 |
+| Story 7c CHOP1 MD5 (stable) | 05d63e56c334f4c5c1dc2950b052b1b3 | S7 | 2026-03-28 |
 | Final FPS (Story 8) | (capture in Story 8) | S8 | — |
 | Final binary checksum | (capture in Story 8) | S8 | — |
 
@@ -54,6 +56,28 @@ Stretch target: >= 25 FPS (40,875 cycles/frame maximum)
 ## Session Notes
 
 > Append one entry per session. Newest at top.
+
+### Session 6 — 2026-03-28
+- Story 7 partially completed: 7c done, 7a infeasible, 7b confirmed no-op.
+- **7c complete**: dhgrRowLo/dhgrRowHi tables relocated from HICODE slack ($8E01/$8EC1) to
+  page-aligned LOCODE addresses ($1B00/$1C00). Eliminates page-boundary penalty on row index
+  >= 63 in dhgrRowHi (LDA abs,X no longer crosses page boundary). No FPS regression.
+  Key fix: `fill = yes, fillval = $00` added to LORAM in linkerConfig so ca65 `.res $1B00-*,$00`
+  arithmetic padding fills CHOP0 to the full $1800 byte size; previously CHOP0 was only 5246
+  bytes and the labels resolved to wrong addresses. CHOP0 is now exactly 6144 bytes.
+  7c CHOP0 MD5: 2f5e6d0fa02bd0b5e022c73ae101ad1a. 7c CHOP1 MD5: 05d63e56c334f4c5c1dc2950b052b1b3.
+  FPS measured: 5.93 (identical to Story 6 baseline — expected, 7c is code quality not speed).
+- **7a infeasible**: Attempted to inline auxReadByte in blitImageColLoop/blitImageFlipColLoop.
+  Root cause of crash: after `STA $C003` (RAMRDAUX), CPU fetches next opcode from AUX memory.
+  The LOCODE inner loop ($1881+) has no AUX mirror — AUX contains zeros = BRK = crash.
+  The auxReadByte trampoline at $1AE8 works ONLY because the loader explicitly mirrors those
+  10 bytes to AUX $1AE8 via RAMWRAUX. Inlining requires mirroring the entire inner loop to AUX,
+  which would require major architectural change (not in scope for Story 7).
+  Inline reverted. auxTrampolineBase stays at $1AE8.
+- **7b confirmed no-op**: Visual screenshot at 20M cycles shows no ghost pixel trails.
+  eraseAllSprites uses a double-buffered display list (renderDisplayList0/1) and blitRect
+  for erase — this mechanism works correctly for DHGR. No fix needed.
+- Story 7 closed with 7c improvement only. Story 8 is next.
 
 ### Session 5 — 2026-03-28
 - Story 6 completed: FPS benchmark baseline measured at ~5.9 FPS (172,414 cycles/frame).

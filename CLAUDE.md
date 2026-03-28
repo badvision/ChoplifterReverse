@@ -35,12 +35,12 @@ $0800–$1FFF  LOCODE: core game code, init, jump table
 $2000–$3FFF  DHGR page 1 (render/display buffer 0) — unchanged address
 $4000–$5FFF  DHGR page 2 (render/display buffer 1) — unchanged address
 $6000–$8DFF  HICODE: entity logic
-$8E01–$8FFF  511 bytes slack — available for loop unrolling
+$8E01–$8FFF  511 bytes slack — available for loop unrolling (Story 7c: $8E01-$8F80 now zeroed, tables relocated)
 $9000–$9F78  Rendering subsystem (renderMoon, terrain, background)
 $9F79–$9FFF  135 bytes slack
 $A000–$A0FF  Sprite pointer tables (animation frame sequences) — UNCHANGED
-$8E01–$8EC0  dhgrRowLo — 192 DHGR row address low bytes (in HICODE slack)
-$8EC1–$8F80  dhgrRowHi — 192 DHGR row address high bytes (in HICODE slack)
+$1B00–$1BBF  dhgrRowLo — 192 DHGR row address low bytes (LOCODE, page-aligned, Story 7c)
+$1C00–$1CBF  dhgrRowHi — 192 DHGR row address high bytes (LOCODE, page-aligned, Story 7c)
 $A100–$A3FF  (reserved for future DHGR row tables if needed; currently unused)
 $A102–$AB1B  CHOP1 occupies this range (19228 bytes, HGR sprite pixel data — not yet DHGR)
 $AB1C+       DHGR sprite pixel data starts here — main bank nibbles (Story 4+)
@@ -360,6 +360,33 @@ enables scripted memory inspection for byte-level validation without manual inte
   This is intentional (prevents RAMWRAUX IRQ hazard) but removes the vsync-based timing
   that the original game relied on. FPS is purely cycle-count driven.
 
+### Story 7 findings
+- **dhgrRowLo/dhgrRowHi relocated to LOCODE $1B00/$1C00**: Tables moved from HICODE slack
+  ($8E01/$8EC1) to page-aligned LOCODE addresses. The `.res $1B00-*,$00` arithmetic fill
+  pattern is the correct ca65 idiom for padding to a fixed address in a relocatable segment.
+  `fill = yes, fillval = $00` in LORAM (linkerConfig) is required so the gap bytes become
+  real data and CHOP0 is padded to the full $1800 size. Without `fill = yes`, CHOP0 was only
+  5246 bytes and the labels resolved to $1AFE instead of $1B00 (the table started 2 bytes
+  early). auxReadByte stays at natural LOCODE position $1AE8 (unchanged from Story 6).
+  blitRect self-modifying addresses verified correct after relocation ($1298 etc.).
+- **auxReadByte inline is infeasible in LOCODE**: Attempted to inline the 9-byte RAMRDAUX
+  sequence directly in blitImageColLoop ($1881). After `STA $C003` (RAMRDAUX), the CPU
+  fetches subsequent opcodes from AUX memory. AUX memory at LOCODE addresses ($1881+)
+  contains zeros (no AUX mirror of MAIN code) — opcode $00 = BRK = crash. The loader only
+  mirrors 10 bytes (the auxReadByte trampoline) to AUX $1AE8. Inline requires mirroring the
+  entire inner loop to AUX, which is a major architectural change. The JSR/RTS 12-cycle
+  overhead per pixel column is unavoidable without rearchitecting the sprite data access.
+  Inline was reverted; game running correctly at 5.93 FPS (no regression from 7c).
+- **eraseAllSprites ghost trails: not present**: Visual inspection at 20M cycles shows no
+  ghost pixel trails. eraseAllSprites uses a double-buffered display list (swap
+  renderDisplayList0/1 pointers at entry) and blitRect for erase — this mechanism works
+  correctly for DHGR dual-bank writes. No fix needed.
+- **Story 7 FPS result**: 5.93 FPS (same as baseline). Row table relocation to LOCODE
+  ($1B00/$1C00) eliminates page-boundary penalty for row index >= 63 in dhgrRowHi, but the
+  savings (~1 cycle per row lookup when crossing page) are negligible at the system level.
+  Major FPS improvements will require eliminating the JSR/RTS overhead per pixel or reducing
+  sprite pixel count — both require Story 8+ architectural work.
+
 ---
 
 ## Conversion Roadmap
@@ -375,7 +402,7 @@ Story 3  Static background: sky, stars, terrain, moon, houses  [DONE — 2026-03
 Story 4  blitImage ported — single sprite (helicopter head-on only)  [DONE — 2026-03-27]
 Story 5  All sprites converted, auxReadByte trampoline, CHOPAUX pipeline  [DONE — 2026-03-27]
 Story 6  FPS benchmark baseline recorded at $68E5/$68E6  [DONE — 2026-03-28, 5.9 FPS]
-Story 7  Three optimizations: byte-aligned sprites → fix erase pass → hot data locality
+Story 7  Three optimizations: row table relocation (7c done); 7a infeasible; 7b no-op  [PARTIAL — 2026-03-28, 5.93 FPS]
 Story 8  Integration regression: title, sortie, gameplay, game-over; final FPS >= 20
 ```
 
