@@ -50,7 +50,7 @@ startTitleSequence:		; $081f
         sta     ZP_FRAME_COUNT
 
         jsr     jumpSetSpriteAnimPtr
-		.word	$a0f2			; Set animation pointer to Broderbund Presents
+		.word	titleGraphicsTable+4		; Set animation pointer to Broderbund Presents
 
 		jsr		jumpSetAnimLoc	; Set animation screen position		; $082e
 				.byte	$1f		; X pos (low byte)
@@ -99,7 +99,7 @@ animBeginChoplifter:				; Starts the layered Choplifter logo animation
 				.word   $001C					; Pointer to animation data for crossed Choplifter logos (not a real animation, just one frame)
 
         jsr     jumpSetSpriteAnimPtr			; $880
-				.word	$a0f0			; Set animation graphic pointer to Choplifter logo
+				.word	titleGraphicsTable+2		; Set animation graphic pointer to Choplifter logo
 
         jsr     jumpClipToScroll
         lda     #$02
@@ -203,7 +203,7 @@ animChopRenderSlideLogos:
         .word   $001C		; Pointer to animation data for left-hand sliding Choplifter logo
 
         jsr     jumpSetSpriteAnimPtr		; $0945
-        .word 	$a0f0		; Set animation graphic pointer to Choplifter logo
+        .word 	titleGraphicsTable+2		; Set animation graphic pointer to Choplifter logo
 
         jsr     jumpClipToScroll
         bcs     animChopRenderSlideAnimDone
@@ -243,7 +243,7 @@ chopSlideFinished:
         bne     slidingChoplifterContinue
 	
         jsr     jumpSetSpriteAnimPtr			; Animate the copyright message
-				.word	$a0f4				; Set animation pointer to Dan Gorlin copyright
+				.word	titleGraphicsTable+6		; Set animation pointer to Dan Gorlin copyright
 
 		jsr		jumpSetAnimLoc				; Set animation parameters
 				.byte	$30		; X pos (low byte)
@@ -297,7 +297,7 @@ startDemoMode:				; $09c7
 
         jsr     jumpInitSlideAnim			; Show Your Mission: Rescue Hostages
         jsr     jumpSetSpriteAnimPtr
-				.word $a0ee					; Pointer to Rescue Hostages graphic
+				.word titleGraphicsTable					; Pointer to Rescue Hostages graphic
 
 		jsr		jumpSetAnimLoc
 				.byte	$52		; X pos (low byte)
@@ -699,13 +699,13 @@ mainLoopEndGameRoutines:
 		bit		mainLoopEndGameWon		; $0cf7
 		bmi		mainLoopEndGameWinSprite
         jsr     jumpSetSpriteAnimPtr
-				.word $a0f6				; Pointer to The End sprite
+				.word titleGraphicsTable+8				; Pointer to The End sprite
 		
 		jmp     mainLoopEndGameFinalize
 
 mainLoopEndGameWinSprite:				; $0d04
         jsr     jumpSetSpriteAnimPtr
-				.word	$a0f8			; Pointer to Broderbund Crown logo
+				.word	titleGraphicsTable+10		; Pointer to Broderbund Crown logo
         
 mainLoopEndGameFinalize:
 		jsr		jumpBlitImage	; Render, flip buffers, and loop
@@ -747,6 +747,8 @@ renderGameSetup:
         ldy     TITLEREGION_BOT
         lda     #$80
         jsr     jumpScreenFill
+        ldy     #$BF				; Re-render HUD: screenFill cleared it (DHGR full-screen fill)
+        jsr     renderHUD
 
         jsr     jumpRenderStars1
         jsr     jumpRenderMoon
@@ -768,6 +770,8 @@ renderGameSetupSkipBase:
         ldy     TITLEREGION_BOT
         lda     #$80
         jsr     jumpScreenFill
+        ldy     #$BF				; Re-render HUD: screenFill cleared it (DHGR full-screen fill)
+        jsr     renderHUD
 
         jsr     jumpRenderStars1
         jsr     jumpRenderMoon
@@ -1781,9 +1785,15 @@ clearScreenStore:			; Loop through all of VRAM
 ; Does NOT change RAMRD state — only RAMWR is toggled.
 ; Preserves A, X, Y on exit.
 screenFill:
-        sta     ZP_FILL_BYTE            ; stash requested fill value
+        ; A = fill byte. Fills the full screen (all 192 rows) with the value.
+        ; X and Y are ignored (callers may set them but they are not used here).
+        ; The original HGR screenFill took X/Y as row bounds, but converting that
+        ; contract safely requires complex register management. Instead, callers that
+        ; need partial fills (e.g. renderStartingGameState) call screenFill then
+        ; immediately re-render the HUD to restore the rows above the game area.
+        STA     ZP_FILL_BYTE            ; stash requested fill value
         AND     #$7F                    ; enforce DHGR bit-7 rule
-        sta     ZP_FILL_BYTE            ; store masked fill byte
+        STA     ZP_FILL_BYTE            ; store masked fill byte
 
         LDX     #191                    ; 192 rows, counting down (0..191)
 @sfRowLoop:
@@ -3552,7 +3562,7 @@ killHostage:			; $62d7
         sta     hostageTable,x
 
         jsr     jumpSetSpriteAnimPtr
-				.word   $a092			; Pointer to dying hostage sprite
+				.word   chopperRubbleSprite+2			; Pointer to dying hostage sprite
 		lda     #$40					; Special marker for death used in renderHostage
         sta     ZP_SCRATCH63
 
@@ -4004,12 +4014,12 @@ updateTank:		; $65c3
         beq     updateTankFrame2
 
         jsr     jumpSetSpriteAnimPtr
-				.word $a066				; Tank tread (frame 1)
+				.word tankSpriteTable+2				; Tank tread (frame 1)
         jmp     updateTankAnimate
 
 updateTankFrame2:
 		jsr     jumpSetSpriteAnimPtr
-				.word $a068				; Tank tread (frame 2)
+				.word tankSpriteTable+4				; Tank tread (frame 2)
         
 updateTankAnimate:
 		lda     #$00					; Configure rendering
@@ -4030,7 +4040,7 @@ updateTankAnimate:
 				.word $001c
         
         jsr     jumpSetSpriteAnimPtr
-				.word $a064
+				.word tankSpriteTable
         
 		jsr     jumpClipToScroll
         bcs     updateTankCannon
@@ -7461,7 +7471,7 @@ jetXVelocityTable:		; $8262 A lookup table of other tables based on X velocity o
 	
 
 jetSpriteTable:			; $826c Pointers into jetMasterSpriteTable to get jet sprites mapped from velocity
-	.word	$a032,$a034,$a042,$a04c,$a058
+	.word	jetMasterSpriteTable,jetMasterSpriteTable+2,jetMasterSpriteTable+$10,jetMasterSpriteTable+$1a,jetMasterSpriteTable+$26
 
 
 
@@ -7513,7 +7523,7 @@ updateChopper:		; $8276
 				.word $001c				; Pointer to animation data
 
 		jsr     jumpSetSpriteAnimPtr
-				.word $a07c				; Pointer to muzzle flash sprite
+				.word bulletSpriteTable+8				; Pointer to muzzle flash sprite
 
         lda		#$FF					; Render starting bullet
         jsr     jumpSetPalette
@@ -7805,7 +7815,7 @@ updateBullet:			; $84a7
 				.word $001c
 
 		jsr     jumpSetSpriteAnimPtr
-				.word $a074			; Pointer to bullet sprite
+				.word bulletSpriteTable			; Pointer to bullet sprite
        
 		jsr     jumpClipToScroll				; $84ba
         bcs     updateBulletOffscreen
@@ -7881,7 +7891,7 @@ updateJetBomb:			; $8526
 				.word $001c
         
 		jsr     jumpSetSpriteAnimPtr
-				.word $a07a			; Jet bomb sprite
+				.word bulletSpriteTable+6			; Jet bomb sprite
         
 		jsr 	jumpClipToScroll
 
@@ -7921,7 +7931,7 @@ updateMissile: 		; $8561
 				.word $001c
 
 		jsr     jumpSetSpriteAnimPtr
-				.word $a078				; Jet missile sprite
+				.word bulletSpriteTable+4				; Jet missile sprite
         
 		jsr     jumpClipToScroll
 
@@ -7971,7 +7981,7 @@ updateTankShell:			; $85b0
 				.word $001c
         
         jsr     jumpSetSpriteAnimPtr
-				.word $a076					; Pointer to tank shell sprite
+				.word bulletSpriteTable+2					; Pointer to tank shell sprite
         
 		jsr     jumpClipToScroll
         bcs     updateTankShellOffscreen
@@ -8966,7 +8976,7 @@ updateAlien:		; $8c42
 				.word $001c
         
         jsr     jumpSetSpriteAnimPtr
-				.word $a07e				; Saucer body sprite
+				.word alienSpriteTable				; Saucer body sprite
         
 		jsr     jumpClipToScroll
         bcs     updateAlienChasePlayer
@@ -9284,7 +9294,7 @@ renderHousesSill:
 				.word $001c
 
         jsr		jumpSetSpriteAnimPtr		; $9094
-				.word $a0ce					; houseSillSprite
+				.word houseSillSprite
 
 		jsr     jumpClipToScroll
         bcc     renderHousesSillVisible		; If the sill is clipped, don't bother
@@ -9318,12 +9328,12 @@ renderHousesSillVisible:
         and     #$01
         bne     renderHousesFireFrame0
         jsr     jumpSetSpriteAnimPtr
-				.word $a0d2					; houseFireSprites
+				.word houseFireSprites
 		jmp		renderHousesFireFrameSet
 
 renderHousesFireFrame0:
 		jsr		jumpSetSpriteAnimPtr		; $90d9
-				.word $a0d4					; houseFireSprites+2
+				.word houseFireSprites+2
 
 renderHousesFireFrameSet:
 		jsr     jumpClipToScroll			; $90de
@@ -9356,7 +9366,7 @@ renderHousesFireDone:
 				.word $001c
 
 		jsr		jumpSetSpriteAnimPtr			; $9110
-				.word $a0d0					; houseDebrisSprite
+				.word houseDebrisSprite
 
 		jsr     jumpClipToScroll
         bcs     renderHouseNext
@@ -9489,7 +9499,7 @@ renderFenceOnScreen:
         jsr     jumpSetWorldspace
 				.word $001c
 		jsr		jumpSetSpriteAnimPtr		; $91fe
-				.word $a0c0					; fenceTowerSprite4
+				.word fenceTowerSprite4
 
 		jsr     jumpClipToScroll
         bcs     renderFenceTower3
@@ -9507,7 +9517,7 @@ renderFenceTower3:
         jsr     jumpSetWorldspace
 				.word $001c
         jsr		jumpSetSpriteAnimPtr
-				.word $a0c2					; fenceTowerSprite3
+				.word fenceTowerSprite3
 		jsr     jumpClipToScroll
         bcs     renderFenceTower2
         lda     #$16
@@ -9524,7 +9534,7 @@ renderFenceTower2:
         jsr     jumpSetWorldspace
 				.word $001c
         jsr		jumpSetSpriteAnimPtr
-				.word $a0c4					; fenceTowerSprite2
+				.word fenceTowerSprite2
 		jsr     jumpClipToScroll
         bcs     renderFenceTower1
         lda     #$16
@@ -9541,7 +9551,7 @@ renderFenceTower1:
         jsr     jumpSetWorldspace
 				.word $001c
         jsr		jumpSetSpriteAnimPtr
-				.word $a0c6					; fenceTowerSprite1
+				.word fenceTowerSprite1
 		jsr     jumpClipToScroll
         bcs     renderFenceTower0
         lda     #$16
@@ -9558,7 +9568,7 @@ renderFenceTower0:
         jsr     jumpSetWorldspace
 				.word $001c
         jsr		jumpSetSpriteAnimPtr
-				.word $a0c8					; fenceTowerSprite0
+				.word fenceTowerSprite0
 		jsr		jumpClipToScroll
 		bcs		renderFenceDone
 		lda		#$16
@@ -9651,7 +9661,7 @@ renderBaseGrassClipped:
         jsr     jumpSetWorldspace
 				.word $001c
 		jsr		jumpSetSpriteAnimPtr
-				.word $a0b4				; baseGrassCornerSprite
+				.word baseGrassCornerSprite
 		jsr     jumpClipToScroll
         bcc     renderBaseGrassLeft
         rts
@@ -9690,7 +9700,7 @@ renderBaseGrassDone:
         jsr     jumpSetWorldspace
 				.word $001c
 		jsr     jumpSetSpriteAnimPtr	; $934e
-				.word $a0b2				; baseBuildingSprite
+				.word baseBuildingSprite
         
 		jsr     jumpClipToScroll
         bcs     renderBaseBuildingDone
@@ -9711,7 +9721,7 @@ renderBaseBuildingDone:
         jsr     jumpSetWorldspace
 				.word $001c
         jsr 	jumpSetSpriteAnimPtr
-				.word $a0bc				; baseLeftSidewalkSprite
+				.word baseLeftSidewalkSprite
 		jsr     jumpClipToScroll
         bcc     renderBaseSidewalkUnclipped
         rts
@@ -9730,7 +9740,7 @@ renderBaseSidewalkUnclipped:
 				.word $001c
         
 		jsr 	jumpSetSpriteAnimPtr
-				.word $a0be				; baseRightSidewalkSprite
+				.word baseRightSidewalkSprite
 		jsr     jumpClipToScroll
         bcs     renderBaseBeginFlag
         jsr     jumpRenderSpriteRight
@@ -9748,7 +9758,7 @@ renderBaseBeginFlag:
         jsr     jumpSetWorldspace
 				.word $001c
         jsr		jumpSetSpriteAnimPtr
-				.word $a0b6				; baseFlagpole
+				.word baseFlagpole
 		jsr     jumpClipToScroll
         bcc     renderBaseFlagpole
         rts
@@ -11217,7 +11227,7 @@ blitStars1:
 renderHUDBubbles:			; $9951
 		jsr		jumpInitSlideAnim					; Prepare to render the black backgrounds
 		jsr		jumpSetSpriteAnimPtr
-				.word $a0ec							; hudBackgroundBubbleSprite
+				.word hudBackgroundBubbleSprite
 
 		lda		#$ff
 		jsr		jumpSetPalette
@@ -11241,7 +11251,7 @@ renderHUDBubbles:			; $9951
 		jsr		jumpBlitImage		; $9976
 
 		jsr		jumpSetSpriteAnimPtr				; Prepare to render the bubbles.
-				.word $a0ea							; hudBubbleSprite
+				.word hudBubbleSprite
 
 		jsr		jumpSetAnimLoc		; $997e			; All three bubbles are the same sprite. Colour is changed via position
 				.byte $2f	; X pos (low byte)		; and one palette change on the third
@@ -11279,7 +11289,7 @@ renderHUD:		; $999f
         jsr     jumpSetBlitPos
 				.word $0068
         jsr     jumpSetImagePtr			; $99b0
-				.word $9a3b				; hudSpriteBlueTop
+				.word hudSpriteBlueTop
         jsr     jumpBlitRect
 
         clc								; Render the sloped top corners
@@ -11292,7 +11302,7 @@ renderHUD:		; $999f
         lda     #$FF			; $99c7
         jsr     jumpSetPalette
         jsr     jumpSetSpriteAnimPtr
-				.word $a0b0				; hudCornerSprite
+				.word hudCornerSprite
         jsr     jumpBlitImage
 
         lda     #$06
@@ -11313,7 +11323,7 @@ renderHUD:		; $999f
         jsr     jumpSetBlitPos
 				.word $0068
         jsr     jumpSetImagePtr			; $99f6
-				.word $9a41				; hudSpriteGreenField
+				.word hudSpriteGreenField
         jsr     jumpBlitRect
 
         lda     #$17					; Render right border of green box, which requires a palette change
@@ -11323,7 +11333,7 @@ renderHUD:		; $999f
 		jsr     jumpSetBlitPos
 				.word $0068
         jsr     jumpSetSpriteAnimPtr	; $9a0b
-				.word $a0ae				; hudBorderSprite
+				.word hudBorderSprite
 		lda 	#$00					; $9a10
         jsr     jumpSetPalette
         jsr     jumpBlitImage
@@ -11340,7 +11350,7 @@ renderHUD:		; $999f
 				.word $0068
         
         jsr     jumpSetImagePtr			; $9a2c
-				.word $9a35				; hudSpriteOrangeField
+				.word hudSpriteOrangeField
         
 		jsr     jumpBlitRect
         rts
@@ -11482,7 +11492,7 @@ startGraphicsDeadCode:		; $9add
 		adc		#$01
 		sta		startGraphicsSprite+1
 		jsr		jumpSetImagePtr
-				.word $9b46			; startGraphicsSprite
+				.word startGraphicsSprite
 
 		jsr		jumpSetAnimLoc		; $9b30
 startGraphicsTarget: .byte $00	; X pos (low byte)
@@ -11641,7 +11651,7 @@ eraseSprite:  							; $9c18
         sta     skyBackground
 
         jsr     jumpSetImagePtr
-				.word $9c5d				; Pointer to skyBackground pseudo-sprite
+				.word skyBackground				; Pointer to skyBackground pseudo-sprite
 
 		jsr		jumpSetBlitPos			; $9c29
 				.word	$001f
@@ -11656,7 +11666,7 @@ eraseSpriteNoSky:
         sta     landBackground			; Set width (in bytes) of land area to erase
 
         jsr     jumpSetImagePtr
-				.word $9c63				; Pointer to landBackground
+				.word landBackground				; Pointer to landBackground
 
 		sec								; Calculate height of on-land area
         lda     ZP_POS_SCRATCH2
