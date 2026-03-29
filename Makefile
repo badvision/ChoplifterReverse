@@ -17,7 +17,7 @@ PGM=choplifter
 EXECNAME=CHOP.SYSTEM\#FF2000
 PROJECT_DIR ?= $(shell pwd)
 
-all: clean diskimage loader $(PGM) emulate
+all: clean diskimage loader $(PGM)
 
 $(PGM): choplifter_sprites.inc
 	@PATH=$(PATH):/usr/local/bin; $(CL65) -C linkerConfig -t apple2 --start-addr $(ADDR) -l$(PGM).lst $(PGM).s
