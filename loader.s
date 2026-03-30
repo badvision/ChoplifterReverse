@@ -134,7 +134,7 @@ chopAuxCopyDone:
 
 	; ---- Story 8: Load CHOPMAIN to main memory staging buffer ----
 	; Reuse $4400 staging buffer (CHOPAUX already copied to AUX $6100, buffer is free).
-	; Note: $4400 + $14DB = $58DB < $6000 — does not overlap HICODE.
+	; Note: $4400 + $0BC5 = $4FC5 < $6000 — does not overlap HICODE.
 	jsr PRODOS
 	.byte $c8
 	.addr fileOpenMain
@@ -190,7 +190,7 @@ pass1RowPassFlipLen  = $27		; 39 bytes — verify in choplifter.lst
 
 	; ---- Story 8: Copy CHOPMAIN from $4400 to LC RAM $D060 ----
 	; $D060 avoids overlap with pass1RowPassFlip ($D030-$D056, 39 bytes).
-	; $D060 + $14DB = $E53B — fits within LC RAM ($D000-$FFFF).
+	; $D060 + $0BC5 = $DC25 — fits within LC RAM ($D000-$FFFF).
 	; Source pointer in ZP $90/$91, dest pointer in ZP $92/$93 (loader scratch).
 	lda #$00
 	sta $90					; source lo = $00
@@ -233,8 +233,8 @@ pass1RowPassFlipLen  = $27		; 39 bytes — verify in choplifter.lst
 
 	jmp initVectors
 
-chopAuxLen  = $14DB			; CHOPAUX = 5339 bytes
-chopMainLen = $14DB			; CHOPMAIN = 5339 bytes (same pixel data, main bank)
+chopAuxLen  = $14DB			; CHOPAUX = 5339 bytes (Option B pixel doubling)
+chopMainLen = $14DB			; CHOPMAIN = 5339 bytes (Option B pixel doubling)
 
 ioError:
 	brk
@@ -387,7 +387,7 @@ fileReadAux:
 	.byte 4
 	.byte 1					; File handle (we know it's gonna be 1)
 	.addr $4400				; $4400 avoids conflict with 1KB OPEN I/O buffer at $4000-$43FF
-	.word $14DB				; chopAuxLen = 5339 bytes
+	.word $14DB				; chopAuxLen = 5339 bytes (Option B pixel doubling)
 fileReadAuxLen:
 	.word 0					; Result (bytes read)
 
@@ -402,7 +402,7 @@ fileReadMain:
 	.byte 4
 	.byte 1					; File handle (we know it's gonna be 1)
 	.addr $4400				; Reuse $4400 staging buffer (CHOPAUX already copied to AUX)
-	.word $14DB				; chopMainLen = 5339 bytes
+	.word $14DB				; chopMainLen = 5339 bytes (Option B pixel doubling)
 fileReadMainLen:
 	.word 0					; Result (bytes read)
 

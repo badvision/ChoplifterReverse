@@ -25,6 +25,7 @@ ASM_PATH             = 'choplifter.s'
 CHOPAUX_PATH         = 'CHOPAUX'
 CHOPMAIN_PATH        = 'CHOPMAIN'
 CHOPAUX_SIZE_PATH    = 'chopaux_size.txt'
+CHOPMAIN_SIZE_PATH   = 'chopmain_size.txt'
 INC_PATH             = 'choplifter_sprites.inc'
 PREVIEW_DIR          = 'tools/sprite_preview'
 
@@ -147,12 +148,65 @@ def read_hgr_sprite(chopgfx, addr):
 
 # ----------------------------------------------------------------- conversion
 
+def hgr_to_dhgr_doubled(b):
+    """
+    Convert one HGR byte to (AUX, MAIN) via proper 2x pixel doubling.
+
+    Each HGR pixel at bit position i (bit 0 = leftmost) becomes 2 adjacent
+    DHGR pixels at positions 2i and 2i+1 within the 14-pixel column group:
+      AUX covers positions 0-6:  b0,b0,b1,b1,b2,b2,b3
+      MAIN covers positions 7-13: b3,b4,b4,b5,b5,b6,b6
+
+    No bit reversal: HGR bit 0 = leftmost = DHGR bit 0 = leftmost.
+    """
+    b &= 0x7F
+    b0 = (b >> 0) & 1
+    b1 = (b >> 1) & 1
+    b2 = (b >> 2) & 1
+    b3 = (b >> 3) & 1
+    b4 = (b >> 4) & 1
+    b5 = (b >> 5) & 1
+    b6 = (b >> 6) & 1
+    aux  = b0 | (b0<<1) | (b1<<2) | (b1<<3) | (b2<<4) | (b2<<5) | (b3<<6)
+    main = b3 | (b4<<1) | (b4<<2) | (b5<<3) | (b5<<4) | (b6<<5) | (b6<<6)
+    return aux, main
+
+
+def reverse_bits7(b):
+    """Reverse the 7 payload bits: bit 0 becomes bit 6, bit 1 becomes bit 5, etc."""
+    b &= 0x7F
+    result = 0
+    for i in range(7):
+        if b & (1 << i):
+            result |= 1 << (6 - i)
+    return result
+
+
+def hgr_row_to_dhgr(row_bytes):
+    """
+    Convert one HGR row to (aux_bytes, main_bytes) for DHGR 2x pixel doubling.
+
+    CHOPGFX convention: byte 0 is the LEFTMOST byte; bit 6 is the LEFTMOST pixel
+    within each byte (bit 0 is the rightmost pixel within each byte).
+    hgr_to_dhgr_doubled() expects bit 0 = leftmost, so we reverse bits within
+    each byte before passing to it. Byte order is unchanged (left to right).
+    """
+    aux  = bytearray()
+    main = bytearray()
+    for b in row_bytes:
+        rb = reverse_bits7(b)
+        a, m = hgr_to_dhgr_doubled(rb)
+        aux.append(a)
+        main.append(m)
+    return bytes(aux), bytes(main)
+
+
 def convert_all(chopgfx, addresses, head_on_idx):
     """
     Convert all sprites.  Returns:
-      headers   -- list of (w_cols, h, aux_ptr, main_ptr, hgr_addr, pixel_bytes)
+      headers   -- list of (w_cols, h, aux_ptr, main_ptr, hgr_addr, aux_rows_bytes)
       aux_data  -- bytearray of all DHGR aux pixel data concatenated
-      main_data -- bytearray of all DHGR main pixel data concatenated (same bytes as aux)
+      main_data -- bytearray of all DHGR main pixel data concatenated
     """
     aux_data  = bytearray()
     main_data = bytearray()
@@ -160,14 +214,23 @@ def convert_all(chopgfx, addresses, head_on_idx):
 
     for addr in addresses:
         w_cols, h, pixel_bytes = read_hgr_sprite(chopgfx, addr)
-        dhgr_pixels = bytes(b & 0x7F for b in pixel_bytes)
+        # w_cols = W_hgr = W_dhgr: width unchanged, each HGR byte -> one AUX+MAIN pair
+        aux_rows  = bytearray()
+        main_rows = bytearray()
+        for row in range(h):
+            row_start = row * w_cols
+            row_end   = row_start + w_cols
+            a, m = hgr_row_to_dhgr(pixel_bytes[row_start:row_end])
+            aux_rows.extend(a)
+            main_rows.extend(m)
+
         aux_offset  = len(aux_data)
         main_offset = len(main_data)
-        aux_data.extend(dhgr_pixels)
-        main_data.extend(dhgr_pixels)
+        aux_data.extend(aux_rows)
+        main_data.extend(main_rows)
         aux_ptr  = AUX_DATA_BASE  + aux_offset
         main_ptr = MAIN_DATA_BASE + main_offset
-        headers.append((w_cols, h, aux_ptr, main_ptr, addr, dhgr_pixels))
+        headers.append((w_cols, h, aux_ptr, main_ptr, addr, bytes(aux_rows)))
 
     return headers, aux_data, main_data
 
@@ -281,7 +344,7 @@ def validate(headers, aux_data, main_data, head_on_idx):
     # Sprite count: 128 total (127 explicit hex addresses + chopperHeadOnDHGR0 label)
     assert n == 128, f'Expected 128 sprites, got {n}'
 
-    # CHOPAUX total size
+    # CHOPAUX / CHOPMAIN total size: w_dhgr bytes per row per sprite
     total_px = sum(w * h for w, h, *_ in headers)
     assert len(aux_data) == total_px, (
         f'CHOPAUX size mismatch: {len(aux_data)} bytes vs expected {total_px}'
@@ -308,7 +371,7 @@ def validate(headers, aux_data, main_data, head_on_idx):
         f'head_on_idx {head_on_idx}: expected addr=${CHOPPERHEADON_HGR_ADDR:04X}, '
         f'got ${addr_ho:04X}'
     )
-    assert w_ho == 2, f'chopperHeadOnDHGR0 W_cols expected 2, got {w_ho}'
+    assert w_ho == 2, f'chopperHeadOnDHGR0 W expected 2 (W_hgr, Option B doubled), got {w_ho}'
     assert h_ho == 13, f'chopperHeadOnDHGR0 H expected 13, got {h_ho}'
 
     print(f'Validation passed:')
@@ -321,7 +384,67 @@ def validate(headers, aux_data, main_data, head_on_idx):
 
 # ----------------------------------------------------------------------- main
 
+def verify_doubling_math():
+    """
+    Sanity-check hgr_to_dhgr_doubled() and reverse_bits7() against known
+    test vectors before writing any files.  Raises AssertionError on mismatch.
+    """
+    # $7F = all 7 bits on -> all 14 DHGR pixels white
+    a, m = hgr_to_dhgr_doubled(0x7F)
+    assert a == 0x7F and m == 0x7F, \
+        f'$7F: expected AUX=$7F MAIN=$7F, got AUX=${a:02X} MAIN=${m:02X}'
+
+    # $00 = all black
+    a, m = hgr_to_dhgr_doubled(0x00)
+    assert a == 0x00 and m == 0x00, \
+        f'$00: expected AUX=$00 MAIN=$00, got AUX=${a:02X} MAIN=${m:02X}'
+
+    # $01 = only bit 0 (leftmost pixel) on -> AUX bits 0,1 set = $03, MAIN = $00
+    a, m = hgr_to_dhgr_doubled(0x01)
+    assert a == 0x03 and m == 0x00, \
+        f'$01: expected AUX=$03 MAIN=$00, got AUX=${a:02X} MAIN=${m:02X}'
+
+    # $40 = only bit 6 (rightmost pixel) on -> AUX=$00, MAIN bits 5,6 set = $60
+    a, m = hgr_to_dhgr_doubled(0x40)
+    assert a == 0x00 and m == 0x60, \
+        f'$40: expected AUX=$00 MAIN=$60, got AUX=${a:02X} MAIN=${m:02X}'
+
+    # reverse_bits7 sanity checks
+    assert reverse_bits7(0x01) == 0x40, \
+        f'reverse_bits7($01): expected $40, got ${reverse_bits7(0x01):02X}'
+    assert reverse_bits7(0x40) == 0x01, \
+        f'reverse_bits7($40): expected $01, got ${reverse_bits7(0x40):02X}'
+    assert reverse_bits7(0x7F) == 0x7F, \
+        f'reverse_bits7($7F): expected $7F, got ${reverse_bits7(0x7F):02X}'
+    assert reverse_bits7(0x00) == 0x00, \
+        f'reverse_bits7($00): expected $00, got ${reverse_bits7(0x00):02X}'
+    assert reverse_bits7(0x02) == 0x20, \
+        f'reverse_bits7($02): expected $20, got ${reverse_bits7(0x02):02X}'
+
+    # hgr_row_to_dhgr convention check:
+    # CHOPGFX: byte 0 = leftmost, bit 6 = leftmost pixel in byte
+    # Leftmost pixel = bit 6 of byte 0 = 0x40 -> after reverse_bits7 = 0x01
+    # -> hgr_to_dhgr_doubled(0x01) -> aux=0x03 (bits 0,1 = leftmost DHGR pixels)
+    aux_row, main_row = hgr_row_to_dhgr(bytes([0x40, 0x00]))
+    assert aux_row[0] == 0x03 and main_row[0] == 0x00, \
+        f'hgr_row_to_dhgr([0x40,0x00]): leftmost pixel should be aux[0]=$03, ' \
+        f'got aux[0]=${aux_row[0]:02X} main[0]=${main_row[0]:02X}'
+    # Rightmost pixel = bit 0 of byte W-1 = bit 0 of byte 1 = 0x01 -> reverse_bits7 = 0x40
+    # -> hgr_to_dhgr_doubled(0x40) -> main=0x60 (bits 5,6 = rightmost DHGR pixels)
+    aux_row2, main_row2 = hgr_row_to_dhgr(bytes([0x00, 0x01]))
+    assert main_row2[1] == 0x60 and aux_row2[1] == 0x00, \
+        f'hgr_row_to_dhgr([0x00,0x01]): rightmost pixel should be main[1]=$60, ' \
+        f'got aux[1]=${aux_row2[1]:02X} main[1]=${main_row2[1]:02X}'
+
+    print('Pixel-doubling math verified: $7F/$00/$01/$40 all correct.')
+    print('reverse_bits7 verified: $01/$40/$7F/$00/$02 all correct.')
+    print('hgr_row_to_dhgr convention verified: leftmost=aux[0]=$03, rightmost=main[-1]=$60.')
+
+
 def main():
+    # Verify doubling math before writing any files
+    verify_doubling_math()
+
     # Load CHOPGFX
     with open(CHOPGFX_PATH, 'rb') as f:
         chopgfx = f.read()
@@ -348,6 +471,11 @@ def main():
     with open(CHOPAUX_SIZE_PATH, 'w') as f:
         f.write(str(len(aux_data)) + '\n')
     print(f'Wrote {CHOPAUX_SIZE_PATH}: {len(aux_data)}')
+
+    # Write chopmain_size.txt
+    with open(CHOPMAIN_SIZE_PATH, 'w') as f:
+        f.write(str(len(main_data)) + '\n')
+    print(f'Wrote {CHOPMAIN_SIZE_PATH}: {len(main_data)}')
 
     # Write choplifter_sprites.inc
     emit_inc(headers, head_on_idx, INC_PATH)
