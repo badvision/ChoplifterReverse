@@ -1561,6 +1561,7 @@ initRendering:		; $1296
         sta     ZP_PALETTE
         sta     ZP_SPRITE_TILT_SIGN
         sta     ZP_SPRITE_TILT_OFFSET
+        sta     ZP_BLIT_MODE
         sta     ZP_DHGR_ROW_L
         sta     ZP_DHGR_ROW_H
         sta     ZP_SCREENBOTTOM			; Vertical scrolling no longer supported, so this is fixed at 0
@@ -2522,6 +2523,8 @@ alignImgState:		; $16dd
 ; been set up previously with helper functions like clipToScroll and setWorldspace).
 ; Preserves registers.
 renderSprite:			; $16de
+		; Bug 4 fix: non-tilted sprites must clear tilt so blitImage does not shift rows
+		stz		ZP_SPRITE_TILT_OFFSET
 		jmp		blitImage
 
 
@@ -2530,6 +2533,8 @@ renderSprite:			; $16de
 ; been set up previously with helper functions like clipToScroll and setWorldspace).
 ; Preserves registers.
 renderSpriteFlip:		; $177c
+		; Bug 4 fix: non-tilted sprites must clear tilt so blitImageFlip does not shift rows
+		stz		ZP_SPRITE_TILT_OFFSET
 		jmp		blitImageFlip
 
 
@@ -2550,6 +2555,8 @@ renderTiltRightDeadCode:		; $1826
 ; configured with a helper routine such as clipToScroll, setWorldspace, etc.
 renderSpriteRight:		; $182f
 renderSpriteRightStub:
+		; Bug 4 fix: non-tilted sprites must clear tilt so blitImage does not shift rows
+		stz		ZP_SPRITE_TILT_OFFSET
 		jmp		blitImage
 
 
@@ -2575,6 +2582,8 @@ renderTiltLeftDeadCode:			; $18b5
 ; "Same sprites are used for facing left and right, with renderer handling X-flip".
 renderSpriteLeft:		; $18be
 renderSpriteLeftStub:
+		; Bug 4 fix: non-tilted sprites must clear tilt so blitImageFlip does not shift rows
+		stz		ZP_SPRITE_TILT_OFFSET
 		jmp		blitImageFlip
 
 
@@ -2735,13 +2744,42 @@ blitImage:
         sta     $C004                   ; RAMWRMAIN
 
         jsr     blitImageCommonSetup
-        bcs     blitImageDone           ; guard failed — skip render
+        bcs     blitImageEarlyExit      ; guard failed — skip render
 
         lda     ZP_IMAGE_H
-        beq     blitImageDone           ; guard: H=0 → dec wraps to $FF → 256 extra rows
+        beq     blitImageEarlyExit      ; guard: H=0 → dec wraps to $FF → 256 extra rows
+        jmp     blitImageSetup
+blitImageEarlyExit:
+        jmp     blitImageDone
+blitImageSetup:
 
         lda     ZP_CURR_X_BYTE
         sta     ZP_FILL_BYTE            ; column save for each row restart
+
+        ; Bug 4 fix: initialise tilt row-countdown from tilt offset (0 = no tilt)
+        lda     ZP_SPRITE_TILT_OFFSET
+        sta     ZP_CURRTILT_OFFSET
+
+        ; Bug 6: self-modify write opcode for OR/XOR explosion mode.
+        ; ZP_BLIT_MODE: $00=STA($91), $01=ORA($11), $02=EOR($51)
+        lda     ZP_BLIT_MODE
+        beq     blitImageRowLoop        ; $00 = normal STA, no patch needed
+        cmp     #$01
+        bne     blitImageSetXorOp
+        lda     #$11                    ; ORA ($B4),Y opcode
+        bne     blitImageApplyOp        ; always taken (ORA opcode $11 is non-zero → Z=0)
+blitImageSetXorOp:
+        lda     #$51                    ; EOR ($B4),Y opcode
+blitImageApplyOp:
+        sta     blitImageWriteOp        ; patch MAIN pass write opcode
+        ; Also patch pass1RowPass write opcode in LC RAM at $D018
+        ; LC write-enable requires two consecutive reads of $C083
+        pha
+        lda     $C083                   ; LC Bank 2 write-enable, strobe 1
+        lda     $C083                   ; LC Bank 2 write-enable, strobe 2
+        pla
+        sta     $D018                   ; patch AUX pass write opcode in LC RAM (Bank 2 write active)
+        bit     $C080                   ; re-assert LC Bank 2 read-only (write-disabled)
 
 blitImageRowLoop:
         ; Look up DHGR row base address for current row
@@ -2781,7 +2819,8 @@ blitImagePass2Loop:
         cpy     #40                         ; right-edge clamp
         bcs     blitImagePass2Skip
         and     #$7F                        ; enforce DHGR bit 7 = 0
-        sta     (ZP_DHGR_ROW_L),y          ; write MAIN DHGR bank at screen col Y
+blitImageWriteOp:
+        sta     (ZP_DHGR_ROW_L),y          ; write MAIN DHGR bank (opcode self-modified for OR/XOR mode)
 blitImagePass2Skip:
         iny                             ; screen col Y++
         inx                             ; sprite col X++
@@ -2804,6 +2843,20 @@ blitImagePass2Skip:
         bcc     :+
         inc     ZP_MAIN_SPRITE_PTR_H
 :
+        ; Bug 4 fix: apply per-row horizontal tilt shift when ZP_SPRITE_TILT_OFFSET != 0.
+        ; Every ZP_SPRITE_TILT_OFFSET rows, shift ZP_FILL_BYTE by ZP_SPRITE_TILT_SIGN (+1 or -1).
+        lda     ZP_SPRITE_TILT_OFFSET
+        beq     blitImageNoTilt         ; tilt offset = 0 means no tilt (cleared by non-tilted renders)
+        dec     ZP_CURRTILT_OFFSET
+        bne     blitImageNoTilt
+        lda     ZP_SPRITE_TILT_OFFSET   ; reset countdown
+        sta     ZP_CURRTILT_OFFSET
+        clc
+        lda     ZP_FILL_BYTE
+        adc     ZP_SPRITE_TILT_SIGN     ; add +1 or -1 (unsigned: $01=+1, $FF=-1)
+        sta     ZP_FILL_BYTE
+blitImageNoTilt:
+
         ; Row bounds check — stop before wrapping below row 0
         lda     ZP_RENDER_CURR_Y
         beq     blitImageDone
@@ -2812,6 +2865,18 @@ blitImagePass2Skip:
         bne     blitImageRowLoop
 
 blitImageDone:
+        ; Bug 6: restore write opcodes to STA ($91) if they were patched for OR/XOR mode
+        lda     ZP_BLIT_MODE
+        beq     blitImageRestoreDone
+        lda     #$91                    ; STA ($B4),Y opcode
+        sta     blitImageWriteOp        ; restore MAIN pass write opcode
+        pha
+        lda     $C083                   ; LC Bank 2 write-enable, strobe 1
+        lda     $C083                   ; LC Bank 2 write-enable, strobe 2
+        pla
+        sta     $D018                   ; restore AUX pass write opcode in LC RAM
+        bit     $C080                   ; write-disable LC Bank 2
+blitImageRestoreDone:
         ; Restore clean memory state (defensive — pass1RowPass should already do teardown)
         sta     $C002                   ; RAMRDMAIN
         sta     $C004                   ; RAMWRMAIN
@@ -7701,7 +7766,7 @@ crashingChopperRender:
 
         jsr     jumpSetWorldspace
 				.word $001c
-        
+
         lda     #$FF
         jsr     jumpSetPalette
         jsr     jumpClipToScroll
@@ -7709,7 +7774,45 @@ crashingChopperRender:
         bcs     crashingChopperOffscreen
         lda     #$05
         jsr     jumpPosToScreenspace
-        jsr     jumpRenderSprite			; Render the explosion
+
+        ; Bug 6: XOR-erase previous explosion frame before OR-writing new one.
+        ; XOR only needed when frame > 0 (first frame has nothing to cancel).
+        ldx     ZP_CURR_ENTITY
+        lda     ENTITY_VX,x
+        beq     crashingChopperDraw     ; first frame — no prior to erase
+        ; Previous frame sprite is at (VX-1)*2 in explosionSpriteTable
+        sec
+        sbc     #$01
+        asl
+        tay
+        lda     explosionSpriteTable,y
+        sta     ZP_SPRITE_PTR_L
+        lda     explosionSpriteTable+1,y
+        sta     ZP_SPRITE_PTR_H
+        jsr     jumpSetSpriteAnimPtr
+				.word $001a
+        lda     #$02                    ; ZP_BLIT_MODE = XOR erase
+        sta     ZP_BLIT_MODE
+        jsr     jumpRenderSprite        ; XOR erase previous explosion frame
+        lda     #$00
+        sta     ZP_BLIT_MODE
+        ; Restore new frame sprite pointer
+        ldx     ZP_CURR_ENTITY
+        lda     ENTITY_VX,x
+        asl
+        tay
+        lda     explosionSpriteTable,y
+        sta     ZP_SPRITE_PTR_L
+        lda     explosionSpriteTable+1,y
+        sta     ZP_SPRITE_PTR_H
+        jsr     jumpSetSpriteAnimPtr
+				.word $001a
+crashingChopperDraw:
+        lda     #$01                    ; ZP_BLIT_MODE = OR write
+        sta     ZP_BLIT_MODE
+        jsr     jumpRenderSprite        ; OR-write new explosion frame
+        lda     #$00
+        sta     ZP_BLIT_MODE
 
 crashingChopperOffscreen:
 		jsr     jumpPlayStaticNoise			; Keep sound going
@@ -7805,7 +7908,41 @@ sinkingChopperNormalSoundPace:
 
         lda     #$05
         jsr     jumpPosToScreenspace
-        jsr     jumpRenderSpriteRight		; Render the frame
+        ; Bug 6: XOR-erase previous explosion frame, then OR-write new frame
+        ldx     ZP_CURR_ENTITY
+        lda     ENTITY_VX,x
+        beq     sinkingChopperDraw      ; first frame — no prior to erase
+        sec
+        sbc     #$01
+        asl
+        tay
+        lda     explosionSpriteTable,y
+        sta     ZP_SPRITE_PTR_L
+        lda     explosionSpriteTable+1,y
+        sta     ZP_SPRITE_PTR_H
+        jsr     jumpSetSpriteAnimPtr
+				.word $001a
+        lda     #$02
+        sta     ZP_BLIT_MODE
+        jsr     jumpRenderSpriteRight   ; XOR erase previous frame
+        lda     #$00
+        sta     ZP_BLIT_MODE
+        ldx     ZP_CURR_ENTITY
+        lda     ENTITY_VX,x
+        asl
+        tay
+        lda     explosionSpriteTable,y
+        sta     ZP_SPRITE_PTR_L
+        lda     explosionSpriteTable+1,y
+        sta     ZP_SPRITE_PTR_H
+        jsr     jumpSetSpriteAnimPtr
+				.word $001a
+sinkingChopperDraw:
+        lda     #$01
+        sta     ZP_BLIT_MODE
+        jsr     jumpRenderSpriteRight   ; OR-write new explosion frame
+        lda     #$00
+        sta     ZP_BLIT_MODE
 
 sinkingChopperOffscreen2:						; $8490
 		jsr		jumpPlayStaticNoise			; Keep sound going
@@ -9229,15 +9366,10 @@ alienEntityCache:		; $8e00	To save/restore entity ID
 		.byte	$00
 
 
-.org $8e01
-
 ; Story 7c: dhgrRowLo/dhgrRowHi relocated to LOCODE $1B00/$1C00 (page-aligned).
-; This area is now zeros — labels dhgrRowLo and dhgrRowHi resolve to $1B00/$1C00.
-; The old HICODE slack location is freed for future unrolling.
-        .res    384, $00            ; was dhgrRowLo (192 bytes) + dhgrRowHi (192 bytes)
-
-; Remaining slack (511 - 384 = 127 bytes)
-        .res    127,$00             ; pad to $9000
+; Labels dhgrRowLo/dhgrRowHi resolve to $1B00/$1C00 (LOCODE). This region is zeros.
+; Dynamic pad: fills from current PC to $9000 regardless of code growth before this point.
+        .res    $9000 - *, $00      ; dynamic fill to $9000 jump table boundary
 
 .org $9000		; Rendering-focused jump table
 jumpRenderMoon:				jmp     renderMoon				; $9000
@@ -11625,7 +11757,7 @@ landBackground:			; $9c63
 ; 2 = Width of sprite in bytes
 ; 3 = Height of sprite in worst-case rotation
 spriteGeometry:				; $9c69
-		.byte $16,$0E,$07,$17	; Chopper
+		.byte $16,$15,$07,$1E	; Chopper: X_left=22, Y_top=21 (covers rotor max +19 rows), W=7, H=30
 		.byte $00,$00,$09,$04	; Unknown, possibly unused
 		.byte $00,$00,$06,$06	; Tank body
 		.byte $00,$00,$03,$03	; Tank turret

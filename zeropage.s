@@ -199,3 +199,5 @@ ZP_LOCALSCROLL_H		= $C8		; A pointer to a scroll position used indirectly for so
 
 ZP_MAIN_SPRITE_PTR_L	= $C9		; Story 8: MAIN sprite pixel data pointer (low byte)
 ZP_MAIN_SPRITE_PTR_H	= $CA		; Story 8: MAIN sprite pixel data pointer (high byte)
+
+ZP_BLIT_MODE			= $CB		; Bug 6: write mode for blitImage. $00=STA (normal), $01=ORA (explosion write), $02=EOR (explosion erase)
