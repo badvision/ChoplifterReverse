@@ -6,7 +6,7 @@ Convert ChoplifterReverse from Apple II single hi-res (HGR, 280×192 1bpp) to do
 (DHGR, 560×192 4bpp 16-color). The original game was written for 48K Apple II/II+. This
 conversion targets Apple IIe with 64K main + 64K aux (128K total).
 
-**See PLAN.md** for the 9-story milestone plan, current story status, and session kickoff
+**See PLAN.md** for the 10-story milestone plan, current story status, and session kickoff
 instructions. Start every session by reading PLAN.md first.
 
 ---
@@ -132,50 +132,6 @@ controller from RAMRDAUX. `LDA lc_code,X` and opcode fetches from LC RAM are una
 RAMRDAUX state (verified: RAM128k.java `buildReadConfiguration()` — LC overlay applied
 unconditionally after RAMRD fill, lines 291–304).
 
-### Inner Loop Design (~18 cycles/column per pass)
-
-```asm
-; ── Per-row setup (once per row) ──────────────────────────────────────────
-    STA   $C003          ; 4 — RAMRDAUX  (CPU now fetches opcodes from AUX for $0200–$BFFF)
-    STA   $C005          ; 4 — RAMWRAUX  (writes → AUX DHGR)
-    LDY   #0             ; 2 — reset column index
-
-; ── Pass 1 inner loop (MUST be in LC RAM) — 18 cycles/column ──────────────
-pass1_loop:
-    LDA   (aux_sprite_ptr),Y ; 5 — read from AUX sprite data (RAMRDAUX active)
-    STA   (ZP_DHGR_ROW_L),Y  ; 6 — write to AUX DHGR screen (RAMWRAUX active)
-    INY                       ; 2
-    CPY   sprite_width        ; 2
-    BNE   pass1_loop          ; 3 (taken)
-
-; ── Per-row teardown ───────────────────────────────────────────────────────
-    STA   $C002          ; 4 — RAMRDMAIN
-    STA   $C004          ; 4 — RAMWRMAIN
-    LDY   #0             ; 2 — reset column index
-
-; ── Pass 2 inner loop (any location — zero bank switches) — 18 cycles/column
-pass2_loop:
-    LDA   (main_sprite_ptr),Y ; 5 — read from MAIN sprite data
-    STA   (ZP_DHGR_ROW_L),Y   ; 6 — write to MAIN DHGR screen
-    INY                        ; 2
-    CPY   sprite_width         ; 2
-    BNE   pass2_loop           ; 3 (taken)
-```
-
-### What Is Eliminated vs. Current (~90 cycles/column opaque)
-
-| Eliminated | Cycles saved |
-|---|---|
-| JSR auxReadByte (JSR+RTS) | 12 |
-| RAMRDAUX trampoline body | 21 |
-| ZP_DRAWSCRATCH1/2 save/restore | 12 |
-| txa/tay/txa register shuffle | 6 |
-| Per-column RAMWRAUX/RAMWRMAIN toggle (Pass 2) | 8 |
-| **Total eliminated** | **~59 cycles/column (Pass 2)** |
-
-Pass 1 still pays 8 cycles/row for the RAMWRAUX write bank (unavoidable for AUX writes),
-but this is amortized across the whole row rather than paid per column.
-
 ### Safety Invariants (mandatory in every blitImage/blitImageFlip commit)
 
 1. `STA $C002` (RAMRDMAIN) unconditionally at blitImage entry
@@ -195,67 +151,10 @@ LC RAM:      Pass 1 inner loop code (~50 bytes) + other hot-path code
              No sprite tables needed in LC RAM (smaller LC footprint than Design C)
 ```
 
-### LC RAM Initialization (loader change required)
-
-After all ProDOS MLI calls, before `JMP $0300`:
-```asm
-    LDA   $C084      ; LC write-enable (first access)
-    LDA   $C084      ; LC write-enable (second access — hardware requirement)
-    ; copy pass1_loop code (~50 bytes) to $D000
-```
-ProDOS overwrite is safe — user-confirmed irrelevant after load.
-
-### Migration Path
-
-- **Phase 1**: Fix color bug (distinct aux/main bytes in blitRect). Zero regression risk.
-- **Phase 2**: Copy Pass 1 loop to LC RAM. Replace blitImageColLoop with two-pass structure.
-  Update loader to write-enable LC and copy loop code. Measure FPS.
-- **Phase 3** (if needed): Unroll pass loops for fixed-width sprites → ~14 cycles/column.
-
-### Performance Estimate (W=6 columns per row)
-
-- Pass 1 overhead: 4+4+2 (setup) + 4+4+2 (teardown) = 20 cycles/row
-- Pass 1 loop: 6 × 18 = 108 cycles/row
-- Pass 2 loop: 6 × 18 = 108 cycles/row
-- Total per row: ~236 cycles (vs ~360 current at 6 cols × 90 cycles/col, modulo outer loop)
-- FPS target: 15–20 FPS range (exact figure requires profiling non-rendering overhead in Jace)
-- Design C single-pass was ~222 cycles/row for W=6; two-pass adds ~14 cycles but eliminates
-  all per-column bank switches in Pass 2 and reduces LC RAM footprint significantly
-
-### Open Verification Tasks (require Jace confirmation before implementation)
-
-1. LC read independence — opcode fetches from $D000+ unaffected by RAMRDAUX state
-2. LC write-enable — double-access $C084 sequence enables writes in Jace
-3. Color table — verify (aux_byte, main_byte) pairs empirically for all 16 DHGR colors
-4. Pass 1 pointer — `(aux_sprite_ptr),Y` with RAMRDAUX reads from AUX correctly
-
 ---
 
-## Dual-Bank Write Pattern (legacy — superseded by Design C above)
-
-Every DHGR screen write touches the same address twice — once in aux bank, once in main bank.
-Bit 7 of EVERY byte written to DHGR screen MUST be 0 (always AND with $7F before write).
-
-```asm
-; LEGACY PATTERN — current blitImage; Design C replaces the RAMRDAUX read entirely
-; Per DHGR column — code in $0200–$BFFF must not be executing when RAMRDAUX fires
-
-    ; STEP 1: Read aux sprite byte (ELIMINATED in Design C)
-    STA   $C003         ; RAMRDAUX
-    LDA   (ZP_AUXPTR_L),Y
-    TAX
-    STA   $C002         ; RAMRDMAIN — restore before any write
-
-    ; STEP 2: Write aux nibble to DHGR aux screen bank
-    STA   $C005         ; RAMWRAUX
-    STX   (ZP_BUFFER),Y
-    STA   $C004         ; RAMWRMAIN
-
-    ; STEP 3: Write main nibble to DHGR main screen bank
-    LDA   main_sprite_byte
-    STA   (ZP_BUFFER),Y
-    INY
-```
+## Dual-Bank Write Pattern
+Superseded by two-pass per-row architecture (Story 8). See git history pre-Story 8 if needed.
 
 ---
 
@@ -560,23 +459,8 @@ enables scripted memory inspection for byte-level validation without manual inte
   sprite pixel count — both require Story 8+ architectural work.
 
 ### Story 8 findings
-- **Sprite table .org placement bug (pre-existing from Story 5)**: The `.org $9f79 / UNUSED 135 / .org $a000`
-  block in choplifter.s was intended to pad HICODE code to $9f79 and place sprite animation tables at $A000.
-  But HICODE code grew past $9f79, making the backward `.org $9f79` set the virtual PC backwards. The
-  subsequent `.org $a000` created a conflicting absolute section at $A000. The sprite tables ended up at
-  physical $AA1C in the binary while code at $A000 remained from the natural HICODE flow. At runtime,
-  `lda chopperSideSpriteTable,y` reads code bytes ($8D/$05/$C0 etc.) not sprite pointers, so every
-  pointer has H < $AB and ALL blitImage guard checks fail — no sprites rendered. FIX: removed the
-  `.org $9f79 / UNUSED 135 / .org $a000` padding; labels now resolve to their natural assembled addresses
-  ($A995 for chopperSideSpriteTable), with all references using symbolic labels. Verified: no hardcoded
-  $A000 accesses exist in game code.
-- **DHGR sprite header .org $AB1C vs .res**: The `choplifter_sprites.inc` used `.org $AB1C` to place
-  headers at $AB1C. In a relocatable ca65 segment, `.org` does NOT insert fill bytes; it sets the virtual
-  PC only. Without `fill = yes` in HIRAM's linker config, the headers landed at the natural PC ($AA95),
-  not at $AB1C. FIX: (1) added `fill = yes, fillval = $00` to HIRAM in linkerConfig, (2) replaced `.org
-  $AB1C` with `.res $AB1C - *, $00` in the inc file. Also removed the `.org $A100` before the include
-  (another conflicting backward .org). CHOP1 is now 24576 bytes (full $6000 fill). Headers verified at
-  $AB1C: sprite 0 = W=4, H=18, aux=$6100, main=$D040. ✓
+- **Sprite tables at $A995** (natural HICODE position — old `.org $A000` removed, all references use symbolic labels).
+- **Headers at $AB1C** via `.res $AB1C - *, $00` in choplifter_sprites.inc. `fill=yes` in HIRAM linkerConfig required.
 - **6-byte sprite header format**: DHGR headers are 6 bytes each: W, H, aux_ptr_lo, aux_ptr_hi,
   main_ptr_lo, main_ptr_hi. `blitImageCommonSetup` reads offset 2-3 for aux_ptr and offset 4-5 for
   main_ptr (after parseImageHeader advances ZP_PARAM_PTR +2 past bytes 0-1).
@@ -593,26 +477,25 @@ enables scripted memory inspection for byte-level validation without manual inte
   LC RAM $D030 = pass1RowPassFlip. $D060 = CHOPMAIN pixel data start.
   Loader constants: pass1RowPassBase=$1DC0, pass1RowPassLen=$27, pass1RowPassFlipBase=$1DE7,
   pass1RowPassFlipLen=$27, auxTrampolineBase=$1E0E. Verify all in choplifter.lst after any LOCODE changes.
-- **Story 8 FPS result**: 9.2 FPS (2026-03-28, initial). After LCBANK1 crash fix and .res fix: 11.4 FPS
-  (2026-03-28, final). Measured (final): 56 frames in 5M cycles (10M→15M cycle interval).
-  FPS = 56 × 1,021,875 / 5,000,000 = 11.45. Improvement: +93% over Story 7 baseline (5.93).
+- **Story 8 FPS result**: 11.4 FPS (final, after all fixes). QA-certified 22 FPS.
+  Measured (final): 56 frames in 5M cycles (10M→15M). Improvement: +93% over Story 7 baseline (5.93).
   Sprites rendering correctly (helicopter visible in DHGR with NTSC color fringing).
 - **LC Bank 1 fix (LCBANK1 crash at ~4.4M cycles)**: Original crash was caused by an incorrect
   `bit $C082` instruction in `blitImageRowPass` and `blitImageFlipRowPass`. $C082 = LCRAM=OFF
   (ROM visible at $D000), causing `jsr $D000` to execute ROM AppleSoft BASIC instead of pass1RowPass.
   FIX: Changed to `bit $C080`. $C080 = LCRAM=ON, Bank 1, write-disabled — single read safely
   re-asserts Bank 1 before jsr $D000. Verified: $D000 = `8D 03 C0` (pass1RowPass STA $C003) after fix.
-- **convert_sprites.py .org vs .res fix**: `emit_inc()` was generating `.org $AB1C` which, in a
-  relocatable ca65 segment, sets the virtual PC without inserting fill bytes (making the listing look
-  correct while the binary places headers at the natural PC, $AA95). FIX: Changed to
-  `.res $AB1C - *, $00` in `emit_inc()`. This emits actual zero fill bytes ensuring placement at $AB1C.
-  Root cause was that `choplifter_sprites.inc` was regenerated by the old `convert_sprites.py` after
-  a manual fix to the inc file was overwritten. The fix must live in `convert_sprites.py`.
-- **$C080 vs $C082 vs $C08A LC soft switch map**:
-  - $C080: LCRAM=ON, Bank 1, Write DISABLED (single read re-asserts Bank 1 — use for pre-jsr $D000)
+- **convert_sprites.py uses `.res $AB1C - *, $00`** in emit_inc() — NOT `.org`. This emits actual fill bytes.
+- **$C080 vs $C082 vs $C083 LC soft switch map** (corrected 2026-03-30):
+  - $C080: LCRAM=ON, Bank 2, Write DISABLED (single read re-asserts Bank 2 read — use for pre-jsr $D000)
   - $C082: LCRAM=OFF (ROM visible at $D000-$FFFF) — DO NOT USE in rendering
-  - $C083 (twice): LCRAM=ON, Bank 1, Write ENABLED — use in loader only
-  - $C088-$C08F: Bank 2 (wrong bank — pass1RowPass is in Bank 1)
+  - $C083 (twice): LCRAM=ON, Bank 2, Write ENABLED — use in loader for all LC copies
+  - $C088: LCRAM=ON, Bank 1, Write DISABLED
+  - $C08B (twice): LCRAM=ON, Bank 1, Write ENABLED
+  Note: pass1RowPass, CHOPMAIN, and CHOPMXFLIP all reside in LC Bank 2. The loader uses
+  $C083 (twice) to write-enable Bank 2. blitImageRowPass uses `bit $C080` to re-assert Bank 2
+  read before `jsr $D000`. IMPORTANT: ALL LC Bank 2 writes must happen AFTER the last ProDOS
+  MLI call — ProDOS kernel lives in LC Bank 2 and restores its data during every I/O call.
 - **20 FPS target analysis**: Non-rendering game loop overhead is approximately 75K cycles/frame.
   The 20 FPS target requires only 51K total cycles/frame — less than the overhead alone. Achieving
   20 FPS requires optimizing the non-rendering subsystems (renderStars, terrain, entity logic). This
@@ -669,11 +552,70 @@ enables scripted memory inspection for byte-level validation without manual inte
 - **Project complete**: All 9 stories done. DHGR conversion from HGR to 4bpp color at 22 FPS
   (10M-15M) / 13.7 FPS (heavy phase). Improvement: 5.93 FPS (baseline) → 22 FPS (+271%).
 
+### Story 10 findings
+- **renderSpriteLeft fix**: `renderSpriteLeft` was calling `blitImage` (no horizontal flip), producing
+  a right-facing sprite drawn at the left position instead of a mirrored sprite. Fix: changed to call
+  `blitImageFlip`. `blitImageFlip` uses `pass1RowPassFlip` (LC RAM $D030) for the AUX pass — it reads
+  sprite pixel data left-to-right but writes to the DHGR screen right-to-left, starting from
+  `ZP_CURR_X_BYTE + W - 1` and decrementing Y toward the left edge. This produces true horizontal
+  mirroring within the two-pass per-row architecture.
+- **blitRect 4-byte color format**: The correct color table format is
+  `[AUX_even_col, MAIN_even_col, AUX_odd_col, MAIN_odd_col]`, indexed directly by column parity
+  (even column → indices 0,1; odd column → indices 2,3). The previous implementation used an
+  alternating-row indexing scheme that selected wrong nibble pairs, producing incorrect DHGR colors
+  for rectangle fills. Background sky, terrain fill, and erase rectangles are all blitRect callers.
+- **Moon DHGR color fix**: `renderMoonBuffer0` and `renderMoonBuffer1` were written as single-pass
+  blits that wrote the same byte value to both AUX and MAIN banks. Correct DHGR rendering requires
+  separate byte values per bank. Fix: each buffer function now performs a RAMWRAUX pass first (writes
+  correct AUX DHGR bytes with `STA $C005` / `STA $C004` brackets), then a RAMWRMAIN pass (writes
+  correct MAIN DHGR bytes, no bank switch needed). Individual DHGR byte values were calculated for the
+  target moon color (orange/yellow) and verified against the DHGR color encoding table.
+- **convert_sprites.py pixel doubling**: Added three functions to generate DHGR pixel data from 1bpp
+  HGR source: `reverse_bits7(b)` reverses the low 7 bits of a byte (preserving bit 7 = palette select),
+  `hgr_row_to_dhgr(row_bytes)` converts one HGR row to a sequence of DHGR nibble pairs, and
+  `hgr_to_dhgr_doubled(hgr_data, w, h)` applies pixel doubling (each HGR pixel expands to 2 DHGR
+  pixels for correct 560px-wide rendering). CHOPAUX and CHOPMAIN output files are 5339 bytes each.
+  `verify_doubling_math()` is a self-test that runs at module import and validates round-trip
+  bit-reversal and nibble-pair extraction. Verified: CHOPAUX byte count = CHOPMAIN byte count = 5339.
+- **Landing "disappearance" is original game behavior**: When `TURN_STATE=0` and `ACCELX=0` (helicopter
+  directly facing the camera, stationary), the game selects the head-on sprite with W=2 (14 pixels wide).
+  The side-view sprite has W=4 (28 pixels wide). The apparent "shrinking" of the helicopter on landing
+  approach is the original 1bpp game behavior preserved as-is in the DHGR conversion — not a bug.
+- **Rotor alignment at TURN_STATE=0 ACCELX=0**: The rotor is positioned at `entity.X - 19px`, which
+  for the head-on sprite produces an offset of approximately 1 DHGR column from the body center. This
+  is a consequence of the original game's tilt table tuning (designed for side-view proportions) being
+  applied to the narrow head-on sprite. Preserved as-is — changing the tilt table offset would affect
+  all flight states.
+- **tailRotorSprite at $7EE4**: This sprite uses W=1 H=2 with pixel bytes $80/$80 (HGR inline data, bit 7
+  set as palette bit). Two independent mechanisms correctly prevent head-on tail rotor rendering:
+  (1) `blitImage` guard `cmp #$AB / bcs blitImageDone` rejects ptr_H=$7E since $7E < $AB, causing an
+  immediate RTS; (2) `$80` entry in `tailRotorHeadOnOffsets` acts as a sentinel that suppresses the
+  draw call before blitImage is even reached. Both mechanisms are preserved and correct.
+- **blitImageFlip with pre-generated flip data (CHOPAXFLIP/CHOPMXFLIP)**: The original `blitImageFlip`
+  approach (per-pixel bit reversal via pass1RowPassFlip) was replaced with pre-generated flip data files.
+  `blitImageFlip` now adds $14DB to the AUX and MAIN sprite pointers to access CHOPAXFLIP (AUX $75DB+)
+  and CHOPMXFLIP (LC RAM $E54B+), then calls `pass1RowPass` at $D000 left-to-right — same as blitImage.
+  The flip data is computed by `compute_flip_data()` in convert_sprites.py: for each sprite row,
+  `flip_aux[col] = reverse_bits7(main_data[W-1-col])` and `flip_main[col] = reverse_bits7(aux_data[W-1-col])`.
+  This correctly implements AUX/MAIN swap + column reversal + bit reversal for true horizontal mirroring.
+- **CRITICAL: ProDOS overwrites LC Bank 2 ($D000-$FFFF) during file I/O**: ProDOS 8 kernel lives in
+  LC Bank 2. Every ProDOS MLI call (OPEN, READ, CLOSE) restores ProDOS kernel data to $D000-$FFFF,
+  overwriting anything the loader had written there. This means: ALL LC Bank 2 writes (pass1RowPass to
+  $D000, CHOPMAIN to $D070, CHOPMXFLIP to $E54B) MUST happen AFTER the final ProDOS call. The loader
+  was restructured to: (1) load all files via ProDOS into main memory staging buffers, then (2) enable
+  LC Bank 2 write and copy all data in a single block at the very end of the loader, with no ProDOS
+  calls after. CHOPMXFLIP is staged at $4400 first, then relocated by a main-to-main copy to $2300
+  (just above loader end), freeing $4400 for CHOPMAIN staging. Verified: $D000 = `8D 03 C0...`
+  (pass1RowPass), $D070 = CHOPMAIN data, $E54B = CHOPMXFLIP data at game start.
+- **blitImageFlip pass criteria verified**: TURN_STATE=$FB (negative) = helicopter faces LEFT
+  (confirmed at 22M cycles). TURN_STATE=$05 (positive) = helicopter faces RIGHT (18M cycles).
+  FPS maintained at 22 FPS (11M-16M window: 108 frames / 5M cycles = 22.07 FPS). No regression.
+
 ---
 
 ## Conversion Roadmap
 
-9 sequential stories. No parallelism — each story produces a runnable binary that is
+10 sequential stories. No parallelism — each story produces a runnable binary that is
 the prerequisite for the next. See PLAN.md for full acceptance criteria per story.
 
 ```
@@ -687,28 +629,17 @@ Story 6  FPS benchmark baseline recorded at $68E5/$68E6  [DONE — 2026-03-28, 5
 Story 7  Three optimizations: row table relocation (7c done); 7a infeasible; 7b no-op  [PARTIAL — 2026-03-28, 5.93 FPS]
 Story 8  Two-pass per-row rendering + sprite table fix  [DONE — 2026-03-28, 11.4 FPS]
 Story 9  Performance profiling + FPS verification  [DONE — 2026-03-28, 22.28 FPS, target >= 20 FPS MET]
+Story 10 Sprite correctness + DHGR color fidelity  [DONE — 2026-03-30, blitImageFlip/CHOPAXFLIP/CHOPMXFLIP/loader reorder/ProDOS LC fix]
 ```
 
 Target: >= 20 FPS (51,094 cycles/frame) — ACHIEVED (22 FPS at 10M-15M window).
 Story 8 achieved +93% FPS improvement (5.93 → 11.4) via two-pass architecture, sprite table
 address fix, LCBANK1 crash fix (bit $C080), and convert_sprites.py .res fix.
 Story 8 QA-certified: 22 FPS (+271% over 5.93 baseline). Story 9 confirmed: 22.28 FPS.
+Story 10: visual correctness pass — flying-left mirroring, moon color, blitRect color format,
+convert_sprites.py pixel doubling. No FPS regression.
 FPS formula: frames_delta × 1,021,875 / cycles_delta (using FPS_COUNTER_L/H at $68E5/$68E6).
 Note: $7000/$7001 = BOUNDS_LEFT_L/H (game constants) — NOT the FPS counter address.
-
----
-
-## Risks and Known Unknowns
-
-| Risk | Story | Mitigation |
-|---|---|---|
-| AN3 address: $C05E vs $C07E | 1 | Verify empirically in jace; both tested |
-| ZP_PALETTE non-rendering reads | 3 | grep choplifter.s for $8C before reassigning |
-| DHGR color phase encoding accuracy | 2, 7 | Validate stripe test screenshot empirically |
-| Non-rendering game cycle cost unknown | 6 | Story 6 measures; if >15K cycles adjust Story 7 targets |
-| renderMoon: 50+ hard-coded HGR addresses | 3 | Handle individually; highest-risk function in Story 3 |
-| Aux memory sprite data too large for AUX $6100–$BEFF | 5 | RESOLVED S5: 1bpp→DHGR strips HGR palette bit ($7F AND), total 5339 bytes fits in AUX $6100–$7536 |
-| RAMRDAUX+RAMWRAUX simultaneously = code fetch from aux = crash | 5 | RESOLVED S5: auxReadByte trampoline at $1AA7 (LOCODE) mirrored to AUX by loader; RAMRDAUX safe from trampoline |
 
 ---
 

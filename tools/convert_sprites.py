@@ -29,10 +29,17 @@ CHOPMAIN_SIZE_PATH   = 'chopmain_size.txt'
 INC_PATH             = 'choplifter_sprites.inc'
 PREVIEW_DIR          = 'tools/sprite_preview'
 
+CHOPAUX_FLIP_PATH       = 'CHOPAXFLIP'
+CHOPMAIN_FLIP_PATH      = 'CHOPMXFLIP'
+CHOPAUX_FLIP_SIZE_PATH  = 'chopaux_flip_size.txt'
+CHOPMAIN_FLIP_SIZE_PATH = 'chopmain_flip_size.txt'
+
 CHOPGFX_VIRTUAL_BASE = 0xA102
 DHGR_HEADER_BASE     = 0xAB1C   # .org for header block in main memory
 AUX_DATA_BASE        = 0x6100   # CHOPAUX loads here in aux memory
-MAIN_DATA_BASE       = 0xD060   # CHOPMAIN loaded to LC RAM $D060 — avoids overlap with pass1RowPassFlip ($D030-$D056)
+MAIN_DATA_BASE       = 0xD070   # CHOPMAIN loaded to LC RAM $D070 — avoids overlap with pass1RowPassFlip ($D030-$D068, 57 bytes)
+AUX_FLIP_BASE        = 0x75DB   # CHOPAUX_FLIP: AUX $6100 + $14DB = $75DB
+MAIN_FLIP_BASE       = 0xE54B   # CHOPMAIN_FLIP: LC $D070 + $14DB = $E54B
 
 # chopperHeadOnDHGR0 was originally HGR sprite at $A41B (Story 4 replaced the
 # chopperHeadOnSpriteTable[0] entry with the label).
@@ -42,6 +49,41 @@ CHOPPERHEADON_HGR_ADDR = 0xA41B
 # chopperSideSpriteTable starts at line 12027, sortieGraphicsTable ends at 12241.
 TABLE_START_LINE = 12027
 TABLE_END_LINE   = 12246   # exclusive upper bound (inclusive: 12245)
+
+
+# ----------------------------------------------------------- per-sprite colors
+
+# Sprite index -> DHGR color index (0 = white/default pixel-doubled)
+# Tank body, treads, and cannon sprites rendered in medium green (color 12)
+SPRITE_COLORS = {
+    50: 12,  # Tank turret (body)
+    51: 12,  # Tank tread (frame 1)
+    52: 12,  # Tank tread (frame 2)
+    53: 12,  # Tank cannon, facing full right
+    54: 12,  # Tank cannon, facing up and right
+    55: 12,  # Tank cannon, facing up
+    56: 12,  # Tank cannon, facing up and left
+    57: 12,  # Tank cannon, facing full left
+}
+
+# [AUX_even, MAIN_even, AUX_odd, MAIN_odd] for each DHGR color index
+DHGR_COLOR_BYTES = {
+    0:  (0x7F, 0x7F, 0x7F, 0x7F),  # white (default pixel-doubled)
+    4:  (0x22, 0x44, 0x08, 0x11),  # DarkGreen
+    12: (0x66, 0x4C, 0x19, 0x33),  # Green (medium green)
+}
+
+
+def get_color_bytes(color_idx, col_parity):
+    """Return (aux_byte, main_byte) for a given color and column parity.
+
+    col_parity: 0 = even screen column, 1 = odd screen column.
+    """
+    tbl = DHGR_COLOR_BYTES[color_idx]
+    if col_parity == 0:
+        return tbl[0], tbl[1]
+    else:
+        return tbl[2], tbl[3]
 
 
 # -------------------------------------------------------------- sprite parsing
@@ -182,7 +224,7 @@ def reverse_bits7(b):
     return result
 
 
-def hgr_row_to_dhgr(row_bytes):
+def hgr_row_to_dhgr(row_bytes, color=0, col_offset=0):
     """
     Convert one HGR row to (aux_bytes, main_bytes) for DHGR 2x pixel doubling.
 
@@ -190,12 +232,25 @@ def hgr_row_to_dhgr(row_bytes):
     within each byte (bit 0 is the rightmost pixel within each byte).
     hgr_to_dhgr_doubled() expects bit 0 = leftmost, so we reverse bits within
     each byte before passing to it. Byte order is unchanged (left to right).
+
+    When color != 0: AND the pixel-doubled shape bits with the color phase mask.
+    This preserves per-pixel shape detail while encoding the DHGR color phase.
+    A solid color mask would lose all shape information (every non-zero byte
+    would become a full 7-pixel-wide solid block).
     """
     aux  = bytearray()
     main = bytearray()
-    for b in row_bytes:
+    for col_i, b in enumerate(row_bytes):
         rb = reverse_bits7(b)
-        a, m = hgr_to_dhgr_doubled(rb)
+        a_shape, m_shape = hgr_to_dhgr_doubled(rb)
+        if color != 0:
+            parity = (col_offset + col_i) % 2
+            aux_mask, main_mask = get_color_bytes(color, parity)
+            a = a_shape & aux_mask
+            m = m_shape & main_mask
+        else:
+            a = a_shape
+            m = m_shape
         aux.append(a)
         main.append(m)
     return bytes(aux), bytes(main)
@@ -212,7 +267,8 @@ def convert_all(chopgfx, addresses, head_on_idx):
     main_data = bytearray()
     headers   = []
 
-    for addr in addresses:
+    for sprite_idx, addr in enumerate(addresses):
+        color = SPRITE_COLORS.get(sprite_idx, 0)
         w_cols, h, pixel_bytes = read_hgr_sprite(chopgfx, addr)
         # w_cols = W_hgr = W_dhgr: width unchanged, each HGR byte -> one AUX+MAIN pair
         aux_rows  = bytearray()
@@ -220,7 +276,7 @@ def convert_all(chopgfx, addresses, head_on_idx):
         for row in range(h):
             row_start = row * w_cols
             row_end   = row_start + w_cols
-            a, m = hgr_row_to_dhgr(pixel_bytes[row_start:row_end])
+            a, m = hgr_row_to_dhgr(pixel_bytes[row_start:row_end], color=color, col_offset=0)
             aux_rows.extend(a)
             main_rows.extend(m)
 
@@ -233,6 +289,59 @@ def convert_all(chopgfx, addresses, head_on_idx):
         headers.append((w_cols, h, aux_ptr, main_ptr, addr, bytes(aux_rows)))
 
     return headers, aux_data, main_data
+
+
+def compute_flip_data(headers, aux_data, main_data):
+    """
+    Generate CHOPAUX_FLIP and CHOPMAIN_FLIP for blitImageFlip.
+
+    For a white/default sprite with W columns per row:
+        flip_aux[row][col_i]  = reverse_bits7(main_data[row][W-1-col_i])
+        flip_main[row][col_i] = reverse_bits7(aux_data[row][W-1-col_i])
+
+    This is the correct DHGR horizontal mirror because:
+    - AUX screen col i shows leftward 7 pixels of that column group
+    - MAIN screen col i shows rightward 7 pixels of that column group
+    - True mirror: pixel at position P maps to mirror position W*14-1-P
+    - Result: flip_aux[i] must contain reversed MAIN data from the opposite column
+
+    For colored sprites (color != 0): instead of bit-reversal, the destination
+    column parity determines which color bytes to use (same as forward data).
+    A source column is "on" if either its aux or main byte is non-zero.
+
+    Returns (aux_flip_data, main_flip_data) as bytes.
+    """
+    aux_flip  = bytearray()
+    main_flip = bytearray()
+
+    aux_offset  = 0
+    main_offset = 0
+
+    for sprite_idx, (w, h, _aux_ptr, _main_ptr, _hgr_addr, _pixels) in enumerate(headers):
+        color = SPRITE_COLORS.get(sprite_idx, 0)
+        for row in range(h):
+            row_aux  = aux_data [aux_offset  + row * w : aux_offset  + row * w + w]
+            row_main = main_data[main_offset + row * w : main_offset + row * w + w]
+            for col in range(w):
+                src_col = w - 1 - col
+                # Compute shape bits for flip: same AUX/MAIN swap + bit-reversal as
+                # white sprites.  For colored sprites, AND the shape bits with the
+                # destination column's color phase mask (preserves pixel shape while
+                # encoding the color, matching what hgr_row_to_dhgr does for forward data).
+                a_shape = reverse_bits7(row_main[src_col])
+                m_shape = reverse_bits7(row_aux [src_col])
+                if color != 0:
+                    parity = col % 2
+                    aux_mask, main_mask = get_color_bytes(color, parity)
+                    aux_flip .append(a_shape & aux_mask)
+                    main_flip.append(m_shape & main_mask)
+                else:
+                    aux_flip .append(a_shape)
+                    main_flip.append(m_shape)
+        aux_offset  += w * h
+        main_offset += w * h
+
+    return bytes(aux_flip), bytes(main_flip)
 
 
 # ----------------------------------------------------------------- inc output
@@ -361,8 +470,8 @@ def validate(headers, aux_data, main_data, head_on_idx):
         assert 0x6100 <= aux_ptr < 0xBF00, (
             f'Sprite {i}: aux_ptr=${aux_ptr:04X} out of range'
         )
-        assert 0xD060 <= main_ptr < 0xF000, (
-            f'Sprite {i}: main_ptr=${main_ptr:04X} out of range (LC RAM $D060-$EFFF)'
+        assert 0xD070 <= main_ptr < 0xF000, (
+            f'Sprite {i}: main_ptr=${main_ptr:04X} out of range (LC RAM $D070-$EFFF)'
         )
 
     # chopperHeadOnDHGR0 comes from $A41B (W=12px -> W_cols=2, H=13)
@@ -476,6 +585,30 @@ def main():
     with open(CHOPMAIN_SIZE_PATH, 'w') as f:
         f.write(str(len(main_data)) + '\n')
     print(f'Wrote {CHOPMAIN_SIZE_PATH}: {len(main_data)}')
+
+    # Generate and write flip data
+    aux_flip_data, main_flip_data = compute_flip_data(headers, aux_data, main_data)
+
+    with open(CHOPAUX_FLIP_PATH, 'wb') as f:
+        f.write(aux_flip_data)
+    print(f'Wrote {CHOPAUX_FLIP_PATH}: {len(aux_flip_data)} bytes (${len(aux_flip_data):04X})')
+
+    with open(CHOPMAIN_FLIP_PATH, 'wb') as f:
+        f.write(main_flip_data)
+    print(f'Wrote {CHOPMAIN_FLIP_PATH}: {len(main_flip_data)} bytes (${len(main_flip_data):04X})')
+
+    with open(CHOPAUX_FLIP_SIZE_PATH, 'w') as f:
+        f.write(str(len(aux_flip_data)) + '\n')
+    print(f'Wrote {CHOPAUX_FLIP_SIZE_PATH}: {len(aux_flip_data)}')
+
+    with open(CHOPMAIN_FLIP_SIZE_PATH, 'w') as f:
+        f.write(str(len(main_flip_data)) + '\n')
+    print(f'Wrote {CHOPMAIN_FLIP_SIZE_PATH}: {len(main_flip_data)}')
+
+    assert len(aux_flip_data) == len(aux_data), \
+        f'CHOPAUX_FLIP size mismatch: {len(aux_flip_data)} vs {len(aux_data)}'
+    assert len(main_flip_data) == len(main_data), \
+        f'CHOPMAIN_FLIP size mismatch: {len(main_flip_data)} vs {len(main_data)}'
 
     # Write choplifter_sprites.inc
     emit_inc(headers, head_on_idx, INC_PATH)

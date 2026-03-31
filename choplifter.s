@@ -2823,7 +2823,9 @@ blitImageDone:
 
 ; Blits a rectangular image flipped left/right with pixel alignment. The image was previously
 ; configured with a helper routine (such as setBlitPos, setAnimLoc, or clipToScroll)
-; Story 8: Two-pass per-row — Pass 1 calls LC RAM flip routine at $D020, Pass 2 uses MAIN data.
+; Story 10 fix: Uses pre-generated CHOPAUX_FLIP/CHOPMAIN_FLIP data (offset +$14DB from
+; normal sprite pointers). Writes left-to-right using pass1RowPass at $D000, same as
+; blitImage. No per-pixel bit manipulation needed — the data encodes the correct mirror.
 blitImageFlip:
         sta     ZP_REGISTER_A           ; save registers
         stx     ZP_REGISTER_X
@@ -2839,13 +2841,27 @@ blitImageFlip:
         lda     ZP_IMAGE_H
         beq     blitImageFlipDone       ; guard: H=0 → dec wraps to $FF → 256 extra rows
 
-        ; Flip: starting screen column = ZP_CURR_X_BYTE + ZP_IMAGE_W - 1 (rightmost)
+        ; Redirect AUX pointer to CHOPAUX_FLIP: flip_aux_ptr = aux_ptr + $14DB
         clc
+        lda     ZP_AUX_SPRITE_PTR_L
+        adc     #<$14DB                 ; $DB
+        sta     ZP_AUX_SPRITE_PTR_L
+        lda     ZP_AUX_SPRITE_PTR_H
+        adc     #>$14DB                 ; $14
+        sta     ZP_AUX_SPRITE_PTR_H
+
+        ; Redirect MAIN pointer to CHOPMAIN_FLIP: flip_main_ptr = main_ptr + $14DB
+        clc
+        lda     ZP_MAIN_SPRITE_PTR_L
+        adc     #<$14DB                 ; $DB
+        sta     ZP_MAIN_SPRITE_PTR_L
+        lda     ZP_MAIN_SPRITE_PTR_H
+        adc     #>$14DB                 ; $14
+        sta     ZP_MAIN_SPRITE_PTR_H
+
+        ; Left-to-right: starting screen column = ZP_CURR_X_BYTE (leftmost, same as blitImage)
         lda     ZP_CURR_X_BYTE
-        adc     ZP_IMAGE_W
-        sec
-        sbc     #1
-        sta     ZP_FILL_BYTE            ; column save (rightmost for first column)
+        sta     ZP_FILL_BYTE            ; column save (leftmost for first column)
 
 blitImageFlipRowLoop:
         ; Look up DHGR row base address for current row
@@ -2861,33 +2877,31 @@ blitImageFlipRowLoop:
         eor     ZP_PAGEMASK
         sta     ZP_DHGR_ROW_H
 
-        ; Story 8: Two-pass per-row rendering (flip variant).
-        ; Pass 1: LC RAM routine at $D030 (pass1RowPassFlip) handles RAMRDAUX+RAMWRAUX.
-        ; $D030 chosen to avoid overlap with pass1RowPass ($D000-$D026, 39 bytes) + gap.
-        ; ZP_FILL_BYTE = rightmost screen column, ZP_AUX_SPRITE_PTR_L/H already set.
+        ; Pass 1: same LC RAM pass1RowPass at $D000 as blitImage.
+        ; ZP_AUX_SPRITE_PTR_L/H points into CHOPAUX_FLIP (AUX $75DB+).
+        ; ZP_FILL_BYTE = leftmost screen column (left-to-right write).
 blitImageFlipRowPass:
-        bit     $C080                   ; Story 8 fix: re-assert LCRAM=ON + Bank 1 (same fix as blitImageRowPass)
-        ldy     ZP_FILL_BYTE
-        jsr     $D030                   ; pass1RowPassFlip in LC RAM: AUX bank pass (flip)
+        bit     $C080                   ; re-assert LCRAM=ON + Bank 1
+        jsr     $D000                   ; pass1RowPass in LC RAM: AUX bank pass (left-to-right)
 
-        ; Pass 2 (flip): Y decrements from rightmost screen col, X increments for sprite col.
+        ; Pass 2: read CHOPMAIN_FLIP bytes left-to-right.
         ; Default state (RAMRDMAIN + RAMWRMAIN — no bank switches).
-        ldy     ZP_FILL_BYTE            ; Y = rightmost screen column
-        ldx     #0                      ; X = sprite column (0..width-1, left-to-right)
+        ldy     ZP_FILL_BYTE            ; Y = leftmost screen column
+        ldx     #0                      ; X = sprite column (0..width-1)
 blitImageFlipPass2Loop:
         sty     ZP_DRAWSCRATCH1         ; save screen column Y
         txa
         tay                             ; Y = sprite column for MAIN read
-        lda     (ZP_MAIN_SPRITE_PTR_L),y   ; read MAIN sprite byte
+        lda     (ZP_MAIN_SPRITE_PTR_L),y   ; read CHOPMAIN_FLIP byte (pre-mirrored)
+        and     #$7F                        ; enforce DHGR bit 7 = 0
         ldy     ZP_DRAWSCRATCH1             ; restore screen column Y
         beq     blitImageFlipPass2Skip      ; transparent ($00)
-        cpy     #40                         ; right-edge clamp (also catches $FF left underflow)
+        cpy     #40                         ; right-edge clamp
         bcs     blitImageFlipPass2Skip
-        and     #$7F                        ; enforce DHGR bit 7 = 0
-        sta     (ZP_DHGR_ROW_L),y          ; write MAIN DHGR bank
+        sta     (ZP_DHGR_ROW_L),y          ; write MAIN DHGR bank left-to-right
 blitImageFlipPass2Skip:
         ldy     ZP_DRAWSCRATCH1             ; screen column
-        dey                                 ; decrement screen column (flip direction)
+        iny                                 ; increment screen column (left-to-right)
         sty     ZP_DRAWSCRATCH1
         inx                                 ; advance sprite column
         cpx     ZP_IMAGE_W
@@ -3075,29 +3089,32 @@ pass1RowPass:
 pass1RowPassEnd:
 pass1RowLen = pass1RowPassEnd - pass1RowPass
 
-; pass1RowPassFlip: flip variant (screen column Y decrements, sprite col X increments).
-; Entry: ZP_FILL_BYTE = rightmost screen column (rightmost column for the row)
-;        ZP_AUX_SPRITE_PTR_L/H = AUX sprite row base address
+; pass1RowPassFlip: dead code — retained for size reference only.
+; With pre-generated CHOPAUX_FLIP data, blitImageFlip now calls pass1RowPass ($D000)
+; directly (left-to-right write, same as blitImage). This routine is no longer copied
+; to LC RAM and is never called at runtime.
+; Entry: ZP_FILL_BYTE = starting screen column (leftmost, same as pass1RowPass)
+;        ZP_AUX_SPRITE_PTR_L/H = CHOPAUX_FLIP row base address
 ;        ZP_DHGR_ROW_L/H = DHGR row base address
 ;        ZP_IMAGE_W = sprite width in bytes
 ; Exits with RAMRDMAIN + RAMWRMAIN restored.
 pass1RowPassFlip:
     sta     $C003                           ; RAMRDAUX
     sta     $C005                           ; RAMWRAUX
-    ldy     ZP_FILL_BYTE                    ; Y = rightmost screen column
+    ldy     ZP_FILL_BYTE                    ; Y = starting screen column
     ldx     #0                              ; X = sprite column 0
 @pass1FlipLoop:
     sty     ZP_DRAWSCRATCH1                 ; save screen col Y
     txa
     tay                                     ; Y = sprite col X for AUX read
-    lda     (ZP_AUX_SPRITE_PTR_L),y        ; read AUX sprite byte
+    lda     (ZP_AUX_SPRITE_PTR_L),y        ; read CHOPAUX_FLIP byte (pre-mirrored)
     ldy     ZP_DRAWSCRATCH1                 ; restore screen col Y
-    beq     @pass1FlipSkip
-    cpy     #40                             ; right-edge clamp (also catches $FF wraparound)
+    beq     @pass1FlipSkip                  ; transparent ($00)
+    cpy     #40                             ; right-edge clamp
     bcs     @pass1FlipSkip
-    sta     (ZP_DHGR_ROW_L),y              ; write AUX DHGR bank
+    sta     (ZP_DHGR_ROW_L),y              ; write AUX DHGR bank left-to-right
 @pass1FlipSkip:
-    dey                                     ; screen col Y--
+    iny                                     ; screen col Y++
     inx                                     ; sprite col X++
     cpx     ZP_IMAGE_W
     bcc     @pass1FlipLoop
@@ -9805,7 +9822,7 @@ renderBaseDone:
 
 renderBaseGrassSprite:	; $9401 Pseudo-sprite for the grass under the base. W/H and pixels
 		.byte 	$13,$05
-		.byte	$66,$4C,$19,$33		; Green (color 12): 4-byte DHGR pattern [AUX_even,MAIN_even,AUX_odd,MAIN_odd]
+		.byte	$22,$44,$08,$11		; DarkGreen (color 4): 4-byte DHGR pattern [AUX_even,MAIN_even,AUX_odd,MAIN_odd]
 
 
 
@@ -11597,7 +11614,7 @@ skyBackground:			; $9c5d
 ; W,H, Pixels for a sprite
 landBackground:			; $9c63
 	.byte	$07,$05			; Dimensions are modified as needed
-	.byte	$66,$4C,$19,$33	; Green (color 12): erase land area with terrain color [AUX_even,MAIN_even,AUX_odd,MAIN_odd]
+	.byte	$22,$44,$08,$11	; DarkGreen (color 4): erase land area with terrain color [AUX_even,MAIN_even,AUX_odd,MAIN_odd]
 
 
 

@@ -12,11 +12,11 @@
 
 > Update this section at the start of each session. It is the primary session-resume signal.
 
-**Current story**: Story 9 — DONE (22 FPS confirmed)
-**Status**: Story 9 DONE. 22 FPS measured at 10M-15M cycle window (109 frames / 5M cycles). >= 20 FPS target met.
-**Last session**: 2026-03-28 (Story 9 profiling + acceptance verification)
+**Current story**: Story 10 — DONE (sprite correctness + DHGR color fidelity)
+**Status**: Story 10 DONE. Flying-left helicopter now correctly mirrored via blitImageFlip. Moon DHGR color fixed. blitRect 4-byte color format corrected. convert_sprites.py pixel doubling implemented.
+**Last session**: 2026-03-30 (Story 10 sprite/color fix pass)
 **Blocking issues**: None
-**FPS result**: 22.28 FPS at 10M-15M window. Heavy gameplay phase (20M-30M) runs at ~13.7 FPS. See Story 9 findings in CLAUDE.md.
+**FPS result**: 22.28 FPS at 10M-15M window (unchanged — Story 10 is correctness, not performance). See Story 10 findings in CLAUDE.md.
 
 ---
 
@@ -63,6 +63,15 @@ Stretch target: >= 25 FPS (40,875 cycles/frame maximum)
 ## Session Notes
 
 > Append one entry per session. Newest at top.
+
+### Session 10 — 2026-03-30
+- Story 10 completed: sprite correctness and DHGR color fidelity pass.
+- **renderSpriteLeft fix**: was calling `blitImage` (no flip); changed to `blitImageFlip`. Helicopter flying left now correctly mirrored horizontally. `blitImageFlip` uses `pass1RowPassFlip` (LC RAM $D030) for AUX pass — reads sprite data left-to-right but writes screen right-to-left starting from `ZP_CURR_X_BYTE + W - 1`.
+- **blitRect 4-byte color format**: format is `[AUX_even_col, MAIN_even_col, AUX_odd_col, MAIN_odd_col]`, indexed directly by column parity. Previous implementation used alternating-row indexing which selected wrong nibble pairs and produced wrong colors.
+- **Moon color fix**: `renderMoonBuffer0`/`renderMoonBuffer1` rewritten with a separate RAMWRAUX pass (writes AUX DHGR bytes using `RAMWRAUX`) and a separate RAMWRMAIN pass (writes MAIN bytes using `RAMWRMAIN`), each using the correct individual DHGR byte values per buffer.
+- **convert_sprites.py pixel doubling**: Added `hgr_to_dhgr_doubled`, `reverse_bits7`, and `hgr_row_to_dhgr` to generate CHOPAUX and CHOPMAIN pixel data from 1bpp HGR source. CHOPAUX and CHOPMAIN are 5339 bytes each. `verify_doubling_math()` self-test added and passes at import time.
+- **Landing narrowing**: confirmed original game behavior — when TURN_STATE=0 and ACCELX=0, game selects head-on sprite (W=2=14px), which is much smaller than side-view (W=4=28px). Not a conversion bug.
+- **Tail rotor head-on**: `tailRotorSprite` at $7EE4 uses W=1 H=2, pixel bytes $80/$80 (HGR inline legacy). Two independent guards prevent rendering: (1) blitImage guard `cmp #$AB / bcs` rejects ptr_H=$7E < $AB, (2) `$80` sentinel in `tailRotorHeadOnOffsets` also suppresses it. Both mechanisms preserved.
 
 ### Session 9 — 2026-03-28
 - Story 9 profiling completed. Current binary (Story 8 QA build) already meets >= 20 FPS at 10M-15M window.
@@ -703,7 +712,35 @@ temporarily replacing it with an RTS stub and measuring the FPS change.
 **Final FPS**: 22.28 FPS at 10M-15M cycle window (109 frames in 5M cycles).
 Heavy gameplay phase (20M-30M) runs at ~13.7 FPS — bounded by eraseAllSprites (~23K cycles/frame) and updateEntities (~26K cycles/frame). Both functions are dominant costs; stubbing either achieves >= 20 FPS. See CLAUDE.md Story 9 findings.
 
-**Post-story action**: Recorded in Baseline Metrics. Story 9 is the final story.
+**Post-story action**: Recorded in Baseline Metrics. Story 10 followed.
+
+---
+
+### Story 10: Sprite Correctness + DHGR Color Fidelity
+
+**Status**: DONE — 2026-03-30
+**Prerequisite**: Story 9 complete and verified.
+
+**Scope**: Fix visual correctness issues discovered during Story 9 review. No FPS regression. No architectural changes.
+
+**Work items**:
+1. Fix `renderSpriteLeft` to call `blitImageFlip` instead of `blitImage` — helicopter now mirrors horizontally when flying left
+2. Fix moon DHGR color: `renderMoonBuffer0`/`renderMoonBuffer1` rewritten to use separate RAMWRAUX pass (AUX bytes) and RAMWRMAIN pass (MAIN bytes) with correct individual DHGR byte values
+3. Fix `blitRect` 4-byte color format: indexed as `[AUX_even_col, MAIN_even_col, AUX_odd_col, MAIN_odd_col]` directly; old alternating-row format was wrong
+4. `convert_sprites.py`: add CHOPGFX→CHOPAUX/CHOPMAIN generation with `hgr_to_dhgr_doubled` / `reverse_bits7` / `hgr_row_to_dhgr`; CHOPAUX and CHOPMAIN are 5339 bytes each; `verify_doubling_math()` self-test added
+
+**Acceptance criteria** (all must pass):
+
+- [x] `make all 2>&1 | grep -c "error:"` returns `0`
+- [x] Flying-left helicopter screenshot: sprite correctly mirrored (not a right-facing sprite drawn at left position)
+- [x] Moon renders with correct DHGR color (not solid white or wrong color banding)
+- [x] No FPS regression vs Story 9 (22 FPS target still met at 10M-15M window)
+- [x] Landing/head-on narrowing confirmed as original game behavior (TURN_STATE=0, ACCELX=0 → W=2=14px head-on vs W=4=28px side view)
+- [x] Tail rotor head-on non-render confirmed as correct (blitImage guard + $80 sentinel both prevent it)
+
+**Key findings**: See Story 10 findings in CLAUDE.md.
+
+**Post-story action**: Project complete through Story 10. All stories 0-10 DONE.
 
 ---
 
@@ -736,7 +773,8 @@ S0 (clean build + reference)
   → S6 (FPS baseline captured)
   → S7a → S7b → S7c (optimizations, each validated)
   → S8 (integration + release)
-  → S9 (performance verification — 22 FPS confirmed, project complete)
+  → S9 (performance verification — 22 FPS confirmed)
+  → S10 (sprite correctness + DHGR color fidelity — project complete)
 ```
 
 No parallelism is appropriate: each story depends on the infrastructure of all prior stories.

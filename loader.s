@@ -29,7 +29,7 @@ main:
 	beq :+
 	brk
 :
-	
+
 	; Close the file
 	jsr PRODOS
 	.byte $cc
@@ -132,9 +132,137 @@ chopAuxCopyDone:
 	sta $C004				; RAMWRMAIN — restore writes to main
 	cli
 
-	; ---- Story 8: Load CHOPMAIN to main memory staging buffer ----
-	; Reuse $4400 staging buffer (CHOPAUX already copied to AUX $6100, buffer is free).
-	; Note: $4400 + $0BC5 = $4FC5 < $6000 — does not overlap HICODE.
+	; ---- Story 10: Load CHOPAUX_FLIP to aux memory ($75DB) ----
+	; Load while still in the ProDOS I/O window. RAMWRAUX copy does not touch LC Bank 2.
+	; Step 1: Open CHOPAUX_FLIP file
+	jsr PRODOS
+	.byte $c8
+	.addr fileOpenAuxFlip
+	beq :+
+	brk
+:
+
+	; Step 2: Read CHOPAUX_FLIP into main $4400 staging buffer ($4400 is free: CHOPAUX copied)
+	jsr PRODOS
+	.byte $ca
+	.addr fileReadAuxFlip
+	beq :+
+	brk
+:
+
+	; Step 3: Close file
+	jsr PRODOS
+	.byte $cc
+	.addr fileClose
+
+	; Step 4: Copy from main $4400 to aux $75DB via RAMWRAUX (safe — does not affect LC Bank 2)
+	lda #$DB
+	sta $92					; dest lo = $DB
+	lda #$75
+	sta $93					; dest hi = $75 => dest = $75DB
+	lda #$00
+	sta $90					; source lo = $00
+	lda #$44
+	sta $91					; source hi = $44 => source = $4400
+
+	ldx #>chopAuxFlipLen	; X = number of full pages
+
+	sei
+	sta $C005				; RAMWRAUX — writes go to aux memory
+
+@chopAuxFlipCopyPageLoop:
+	ldy #0
+@chopAuxFlipCopyByteLoop:
+	lda ($90),y
+	sta ($92),y
+	iny
+	bne @chopAuxFlipCopyByteLoop
+
+	inc $91
+	inc $93
+	dex
+	bne @chopAuxFlipCopyPageLoop
+
+	ldy #0
+	ldx #<chopAuxFlipLen
+	beq @chopAuxFlipCopyDone
+
+@chopAuxFlipCopyRemLoop:
+	lda ($90),y
+	sta ($92),y
+	iny
+	dex
+	bne @chopAuxFlipCopyRemLoop
+
+@chopAuxFlipCopyDone:
+	sta $C004				; RAMWRMAIN — restore writes to main
+	cli
+
+	; ---- Story 10: Load CHOPMAIN_FLIP to $4400 staging buffer ----
+	; $4400 is free: CHOPAUX and CHOPAXFLIP have been copied to AUX already.
+	; Read to $4400 (LOADBUFFER=$4000 I/O buffer does not overlap $4400 destination).
+	jsr PRODOS
+	.byte $c8
+	.addr fileOpenMainFlip
+	beq :+
+	brk
+:
+
+	jsr PRODOS
+	.byte $ca
+	.addr fileReadMainFlip
+	beq :+
+	brk
+:
+
+	jsr PRODOS
+	.byte $cc
+	.addr fileClose
+
+	; ---- Move CHOPMAIN_FLIP from $4400 to $2300 (main-to-main copy) ----
+	; $2300-$37DB: just above loader end ($22FC). Does not overlap
+	; LOADBUFFER ($4000-$43FF) or CHOPMAIN staging ($4400-$58DA).
+	; After this copy, $4400 is free for CHOPMAIN staging.
+	lda #$00
+	sta $90					; source lo = $00
+	lda #$44
+	sta $91					; source hi = $44 => source = $4400
+	lda #$00
+	sta $92					; dest lo = $00
+	lda #$23
+	sta $93					; dest hi = $23 => dest = $2300
+
+	ldx #>chopMainFlipLen	; X = number of full pages
+
+@mainFlipReloCopyPageLoop:
+	ldy #0
+@mainFlipReloCopyByteLoop:
+	lda ($90),y
+	sta ($92),y
+	iny
+	bne @mainFlipReloCopyByteLoop
+
+	inc $91
+	inc $93
+	dex
+	bne @mainFlipReloCopyPageLoop
+
+	ldy #0
+	ldx #<chopMainFlipLen
+	beq @mainFlipReloCopyDone
+
+@mainFlipReloCopyRemLoop:
+	lda ($90),y
+	sta ($92),y
+	iny
+	dex
+	bne @mainFlipReloCopyRemLoop
+
+@mainFlipReloCopyDone:
+
+	; ---- Story 8: Load CHOPMAIN to main memory staging buffer ($4400) ----
+	; $4400 is free: CHOPAXFLIP and CHOPMXFLIP have been moved out.
+	; CHOPMAIN stages here temporarily; LC RAM copy happens after all ProDOS I/O.
 	jsr PRODOS
 	.byte $c8
 	.addr fileOpenMain
@@ -153,19 +281,19 @@ chopAuxCopyDone:
 	.byte $cc
 	.addr fileClose
 
-	; ---- Story 8: LC write-enable (double read of $C083) ----
-	; $C083 = LC Bank 2 read+write enable (requires two consecutive reads).
-	; $C080/$C084 = read-only — does NOT enable writes. Must use $C083/$C087.
-	; After two reads of $C083: $D000-$FFFF reads from LC Bank 2, writes to LC Bank 2.
+	; ---- All ProDOS I/O is complete. Now perform all LC Bank 2 writes. ----
+	; ProDOS MLI calls use LC Bank 2 (kernel at $D000-$FFFF) and restore ProDOS data
+	; to that range after each call. Any LC RAM writes made before this point would be
+	; overwritten. Performing all LC copies here, after the final ProDOS close, ensures
+	; the data survives to game start.
+
+	; LC write-enable (double read of $C083 = LC Bank 2 read+write enable)
+pass1RowPassBase   = $1DC0		; verify in choplifter.lst
+pass1RowPassLen    = $27		; 39 bytes — verify in choplifter.lst
 	lda $C083				; LC Bank 2 read+write enable, first strobe
 	lda $C083				; LC Bank 2 read+write enable, second strobe (write now active)
 
-	; ---- Story 8: Copy pass1RowPass to LC RAM $D000 ----
-	; pass1RowPass address and length from choplifter.lst: $1DC0, len=$27 (39 bytes)
-	; Update these constants if LOCODE code before pass1RowPass changes.
-	; Story 8 QA: dhgrRowLo/Hi moved to $1C00/$1D00; pass1RowPass now at $1DC0 (39 bytes).
-pass1RowPassBase   = $1DC0		; verify in choplifter.lst
-pass1RowPassLen    = $27		; 39 bytes — verify in choplifter.lst
+	; Copy pass1RowPass to LC RAM $D000 (39 bytes from CHOP0 at $1DC0).
 	ldx #0
 @copyPass1:
 	lda pass1RowPassBase,x
@@ -174,34 +302,18 @@ pass1RowPassLen    = $27		; 39 bytes — verify in choplifter.lst
 	cpx #pass1RowPassLen
 	bne @copyPass1
 
-	; ---- Story 8: Copy pass1RowPassFlip to LC RAM $D030 ----
-	; $D030 chosen to avoid overlap with pass1RowPass ($D000-$D026, 39 bytes).
-	; pass1RowPassFlip address and length from choplifter.lst: $1DE7, len=$27 (39 bytes)
-	; Story 8 QA: flip moved from $D020 to $D030 to prevent code overlap.
-pass1RowPassFlipBase = $1DE7	; verify in choplifter.lst
-pass1RowPassFlipLen  = $27		; 39 bytes — verify in choplifter.lst
-	ldx #0
-@copyPass1Flip:
-	lda pass1RowPassFlipBase,x
-	sta $D030,x
-	inx
-	cpx #pass1RowPassFlipLen
-	bne @copyPass1Flip
-
-	; ---- Story 8: Copy CHOPMAIN from $4400 to LC RAM $D060 ----
-	; $D060 avoids overlap with pass1RowPassFlip ($D030-$D056, 39 bytes).
-	; $D060 + $0BC5 = $DC25 — fits within LC RAM ($D000-$FFFF).
+	; Copy CHOPMAIN from $4400 to LC RAM $D070.
+	; $D070 + $14DB = $E54B — fits within LC RAM ($D000-$FFFF).
 	; Source pointer in ZP $90/$91, dest pointer in ZP $92/$93 (loader scratch).
 	lda #$00
 	sta $90					; source lo = $00
 	lda #$44
 	sta $91					; source hi = $44 => source = $4400
-	lda #$60
-	sta $92					; dest lo = $60
+	lda #$70
+	sta $92					; dest lo = $70
 	lda #$D0
-	sta $93					; dest hi = $D0 => dest = $D060
+	sta $93					; dest hi = $D0 => dest = $D070
 
-	; Copy chopMainLen bytes (same page-based loop as CHOPAUX copy)
 	ldx #>chopMainLen		; X = number of full pages
 
 @chopMainCopyPageLoop:
@@ -217,7 +329,6 @@ pass1RowPassFlipLen  = $27		; 39 bytes — verify in choplifter.lst
 	dex
 	bne @chopMainCopyPageLoop
 
-	; Partial final page
 	ldy #0
 	ldx #<chopMainLen
 	beq @chopMainCopyDone
@@ -231,10 +342,52 @@ pass1RowPassFlipLen  = $27		; 39 bytes — verify in choplifter.lst
 
 @chopMainCopyDone:
 
+	; Copy CHOPMAIN_FLIP from $2300 to LC RAM $E54B.
+	; $E54B + $14DB = $FA26 — fits within LC RAM.
+	; LC writes still active from above.
+	lda #$4B
+	sta $92					; dest lo = $4B
+	lda #$E5
+	sta $93					; dest hi = $E5 => dest = $E54B
+	lda #$00
+	sta $90					; source lo = $00
+	lda #$23
+	sta $91					; source hi = $23 => source = $2300
+
+	ldx #>chopMainFlipLen	; X = number of full pages
+
+@chopMainFlipCopyPageLoop:
+	ldy #0
+@chopMainFlipCopyByteLoop:
+	lda ($90),y
+	sta ($92),y
+	iny
+	bne @chopMainFlipCopyByteLoop
+
+	inc $91
+	inc $93
+	dex
+	bne @chopMainFlipCopyPageLoop
+
+	ldy #0
+	ldx #<chopMainFlipLen
+	beq @chopMainFlipCopyDone
+
+@chopMainFlipCopyRemLoop:
+	lda ($90),y
+	sta ($92),y
+	iny
+	dex
+	bne @chopMainFlipCopyRemLoop
+
+@chopMainFlipCopyDone:
+
 	jmp initVectors
 
-chopAuxLen  = $14DB			; CHOPAUX = 5339 bytes (Option B pixel doubling)
-chopMainLen = $14DB			; CHOPMAIN = 5339 bytes (Option B pixel doubling)
+chopAuxLen      = $14DB		; CHOPAUX = 5339 bytes (Option B pixel doubling)
+chopMainLen     = $14DB		; CHOPMAIN = 5339 bytes (Option B pixel doubling)
+chopAuxFlipLen  = $14DB		; CHOPAUX_FLIP = 5339 bytes (same size as CHOPAUX)
+chopMainFlipLen = $14DB		; CHOPMAIN_FLIP = 5339 bytes (same size as CHOPMAIN)
 
 ioError:
 	brk
@@ -406,6 +559,36 @@ fileReadMain:
 fileReadMainLen:
 	.word 0					; Result (bytes read)
 
+fileOpenAuxFlip:
+	.byte 3
+	.addr auxFlipPath
+	.addr LOADBUFFER
+	.byte 0					; Result (file handle)
+	.byte 0					; Padding
+
+fileReadAuxFlip:
+	.byte 4
+	.byte 1					; File handle (we know it's gonna be 1)
+	.addr $4400				; $4400 avoids conflict with 1KB OPEN I/O buffer at $4000-$43FF
+	.word $14DB				; chopAuxFlipLen = 5339 bytes
+fileReadAuxFlipLen:
+	.word 0					; Result (bytes read)
+
+fileOpenMainFlip:
+	.byte 3
+	.addr mainFlipPath
+	.addr LOADBUFFER
+	.byte 0					; Result (file handle)
+	.byte 0					; Padding
+
+fileReadMainFlip:
+	.byte 4
+	.byte 1					; File handle (we know it's gonna be 1)
+	.addr $4400				; Stage at $4400 (no conflict with LOADBUFFER=$4000)
+	.word $14DB				; chopMainFlipLen = 5339 bytes
+fileReadMainFlipLen:
+	.word 0					; Result (bytes read)
+
 fileClose:
 	.byte 1
 	.byte 1					; File handle (we know it's gonna be 1)
@@ -428,3 +611,7 @@ auxPath:
 	pstring "/CHOPLIFTER/CHOPAUX"
 mainPath:
 	pstring "/CHOPLIFTER/CHOPMAIN"
+auxFlipPath:
+	pstring "/CHOPLIFTER/CHOPAXFLIP"
+mainFlipPath:
+	pstring "/CHOPLIFTER/CHOPMXFLIP"

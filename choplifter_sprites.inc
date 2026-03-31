@@ -2,7 +2,7 @@
 ; Story 8: DHGR sprite headers (6 bytes each) + address equates
 ; Header layout: W, H, aux_ptr_lo, aux_ptr_hi, main_ptr_lo, main_ptr_hi
 ; AUX pixel data: CHOPAUX loaded to $6100 in AUX memory.
-; MAIN pixel data: CHOPMAIN loaded to $D060 in LC RAM.
+; MAIN pixel data: CHOPMAIN loaded to $D070 in LC RAM.
 
 ; DHGR sprite header block -- placed at $AB1C
 ; Use .res (not .org) to emit fill bytes and ensure correct placement.
@@ -12,262 +12,262 @@
 .res $AB1C - *, $00
 
 dhgrSprite_000:
-    .byte 4, 18, $00, $61, $60, $D0   ; was $A102  aux=$6100 main=$D060
+    .byte 4, 18, $00, $61, $70, $D0   ; was $A102  aux=$6100 main=$D070
 dhgrSprite_001:
-    .byte 4, 16, $48, $61, $A8, $D0   ; was $A14C  aux=$6148 main=$D0A8
+    .byte 4, 16, $48, $61, $B8, $D0   ; was $A14C  aux=$6148 main=$D0B8
 dhgrSprite_002:
-    .byte 5, 15, $88, $61, $E8, $D0   ; was $A18E  aux=$6188 main=$D0E8
+    .byte 5, 15, $88, $61, $F8, $D0   ; was $A18E  aux=$6188 main=$D0F8
 dhgrSprite_003:
-    .byte 5, 14, $D3, $61, $33, $D1   ; was $A1DB  aux=$61D3 main=$D133
+    .byte 5, 14, $D3, $61, $43, $D1   ; was $A1DB  aux=$61D3 main=$D143
 dhgrSprite_004:
-    .byte 5, 14, $19, $62, $79, $D1   ; was $A223  aux=$6219 main=$D179
+    .byte 5, 14, $19, $62, $89, $D1   ; was $A223  aux=$6219 main=$D189
 dhgrSprite_005:
-    .byte 5, 13, $5F, $62, $BF, $D1   ; was $A26B  aux=$625F main=$D1BF
+    .byte 5, 13, $5F, $62, $CF, $D1   ; was $A26B  aux=$625F main=$D1CF
 dhgrSprite_006:
-    .byte 5, 13, $A0, $62, $00, $D2   ; was $A2AE  aux=$62A0 main=$D200
+    .byte 5, 13, $A0, $62, $10, $D2   ; was $A2AE  aux=$62A0 main=$D210
 dhgrSprite_007:
-    .byte 5, 13, $E1, $62, $41, $D2   ; was $A2F1  aux=$62E1 main=$D241
+    .byte 5, 13, $E1, $62, $51, $D2   ; was $A2F1  aux=$62E1 main=$D251
 dhgrSprite_008:
-    .byte 5, 14, $22, $63, $82, $D2   ; was $A334  aux=$6322 main=$D282
+    .byte 5, 14, $22, $63, $92, $D2   ; was $A334  aux=$6322 main=$D292
 dhgrSprite_009:
-    .byte 5, 15, $68, $63, $C8, $D2   ; was $A37C  aux=$6368 main=$D2C8
+    .byte 5, 15, $68, $63, $D8, $D2   ; was $A37C  aux=$6368 main=$D2D8
 dhgrSprite_010:
-    .byte 5, 16, $B3, $63, $13, $D3   ; was $A3C9  aux=$63B3 main=$D313
+    .byte 5, 16, $B3, $63, $23, $D3   ; was $A3C9  aux=$63B3 main=$D323
 chopperHeadOnDHGR0:
 dhgrSprite_011:
-    .byte 2, 13, $03, $64, $63, $D3   ; was $A41B  aux=$6403 main=$D363
+    .byte 2, 13, $03, $64, $73, $D3   ; was $A41B  aux=$6403 main=$D373
 dhgrSprite_012:
-    .byte 2, 13, $1D, $64, $7D, $D3   ; was $A437  aux=$641D main=$D37D
+    .byte 2, 13, $1D, $64, $8D, $D3   ; was $A437  aux=$641D main=$D38D
 dhgrSprite_013:
-    .byte 3, 13, $37, $64, $97, $D3   ; was $A453  aux=$6437 main=$D397
+    .byte 3, 13, $37, $64, $A7, $D3   ; was $A453  aux=$6437 main=$D3A7
 dhgrSprite_014:
-    .byte 4, 13, $5E, $64, $BE, $D3   ; was $A47C  aux=$645E main=$D3BE
+    .byte 4, 13, $5E, $64, $CE, $D3   ; was $A47C  aux=$645E main=$D3CE
 dhgrSprite_015:
-    .byte 4, 13, $92, $64, $F2, $D3   ; was $A4B2  aux=$6492 main=$D3F2
+    .byte 4, 13, $92, $64, $02, $D4   ; was $A4B2  aux=$6492 main=$D402
 dhgrSprite_016:
-    .byte 5, 12, $C6, $64, $26, $D4   ; was $A4E8  aux=$64C6 main=$D426
+    .byte 5, 12, $C6, $64, $36, $D4   ; was $A4E8  aux=$64C6 main=$D436
 dhgrSprite_017:
-    .byte 2, 12, $02, $65, $62, $D4   ; was $A526  aux=$6502 main=$D462
+    .byte 2, 12, $02, $65, $72, $D4   ; was $A526  aux=$6502 main=$D472
 dhgrSprite_018:
-    .byte 5, 1, $1A, $65, $7A, $D4   ; was $A540  aux=$651A main=$D47A
+    .byte 5, 1, $1A, $65, $8A, $D4   ; was $A540  aux=$651A main=$D48A
 dhgrSprite_019:
-    .byte 5, 1, $1F, $65, $7F, $D4   ; was $A547  aux=$651F main=$D47F
+    .byte 5, 1, $1F, $65, $8F, $D4   ; was $A547  aux=$651F main=$D48F
 dhgrSprite_020:
-    .byte 5, 1, $24, $65, $84, $D4   ; was $A54E  aux=$6524 main=$D484
+    .byte 5, 1, $24, $65, $94, $D4   ; was $A54E  aux=$6524 main=$D494
 dhgrSprite_021:
-    .byte 1, 6, $29, $65, $89, $D4   ; was $A555  aux=$6529 main=$D489
+    .byte 1, 6, $29, $65, $99, $D4   ; was $A555  aux=$6529 main=$D499
 dhgrSprite_022:
-    .byte 1, 6, $2F, $65, $8F, $D4   ; was $A55D  aux=$652F main=$D48F
+    .byte 1, 6, $2F, $65, $9F, $D4   ; was $A55D  aux=$652F main=$D49F
 dhgrSprite_023:
-    .byte 1, 4, $35, $65, $95, $D4   ; was $A565  aux=$6535 main=$D495
+    .byte 1, 4, $35, $65, $A5, $D4   ; was $A565  aux=$6535 main=$D4A5
 dhgrSprite_024:
-    .byte 1, 7, $39, $65, $99, $D4   ; was $A56B  aux=$6539 main=$D499
+    .byte 1, 7, $39, $65, $A9, $D4   ; was $A56B  aux=$6539 main=$D4A9
 dhgrSprite_025:
-    .byte 3, 5, $40, $65, $A0, $D4   ; was $A574  aux=$6540 main=$D4A0
+    .byte 3, 5, $40, $65, $B0, $D4   ; was $A574  aux=$6540 main=$D4B0
 dhgrSprite_026:
-    .byte 4, 11, $4F, $65, $AF, $D4   ; was $A585  aux=$654F main=$D4AF
+    .byte 4, 11, $4F, $65, $BF, $D4   ; was $A585  aux=$654F main=$D4BF
 dhgrSprite_027:
-    .byte 3, 13, $7B, $65, $DB, $D4   ; was $A5B3  aux=$657B main=$D4DB
+    .byte 3, 13, $7B, $65, $EB, $D4   ; was $A5B3  aux=$657B main=$D4EB
 dhgrSprite_028:
-    .byte 3, 15, $A2, $65, $02, $D5   ; was $A5DC  aux=$65A2 main=$D502
+    .byte 3, 15, $A2, $65, $12, $D5   ; was $A5DC  aux=$65A2 main=$D512
 dhgrSprite_029:
-    .byte 2, 16, $CF, $65, $2F, $D5   ; was $A60B  aux=$65CF main=$D52F
+    .byte 2, 16, $CF, $65, $3F, $D5   ; was $A60B  aux=$65CF main=$D53F
 dhgrSprite_030:
-    .byte 3, 17, $EF, $65, $4F, $D5   ; was $A62D  aux=$65EF main=$D54F
+    .byte 3, 17, $EF, $65, $5F, $D5   ; was $A62D  aux=$65EF main=$D55F
 dhgrSprite_031:
-    .byte 4, 16, $22, $66, $82, $D5   ; was $A662  aux=$6622 main=$D582
+    .byte 4, 16, $22, $66, $92, $D5   ; was $A662  aux=$6622 main=$D592
 dhgrSprite_032:
-    .byte 4, 16, $62, $66, $C2, $D5   ; was $A6A4  aux=$6662 main=$D5C2
+    .byte 4, 16, $62, $66, $D2, $D5   ; was $A6A4  aux=$6662 main=$D5D2
 dhgrSprite_033:
-    .byte 3, 11, $A2, $66, $02, $D6   ; was $A6E6  aux=$66A2 main=$D602
+    .byte 3, 11, $A2, $66, $12, $D6   ; was $A6E6  aux=$66A2 main=$D612
 dhgrSprite_034:
-    .byte 3, 14, $C3, $66, $23, $D6   ; was $A709  aux=$66C3 main=$D623
+    .byte 3, 14, $C3, $66, $33, $D6   ; was $A709  aux=$66C3 main=$D633
 dhgrSprite_035:
-    .byte 4, 10, $ED, $66, $4D, $D6   ; was $A735  aux=$66ED main=$D64D
+    .byte 4, 10, $ED, $66, $5D, $D6   ; was $A735  aux=$66ED main=$D65D
 dhgrSprite_036:
-    .byte 5, 8, $15, $67, $75, $D6   ; was $A75F  aux=$6715 main=$D675
+    .byte 5, 8, $15, $67, $85, $D6   ; was $A75F  aux=$6715 main=$D685
 dhgrSprite_037:
-    .byte 5, 11, $3D, $67, $9D, $D6   ; was $A789  aux=$673D main=$D69D
+    .byte 5, 11, $3D, $67, $AD, $D6   ; was $A789  aux=$673D main=$D6AD
 dhgrSprite_038:
-    .byte 5, 18, $74, $67, $D4, $D6   ; was $A7C2  aux=$6774 main=$D6D4
+    .byte 5, 18, $74, $67, $E4, $D6   ; was $A7C2  aux=$6774 main=$D6E4
 dhgrSprite_039:
-    .byte 4, 15, $CE, $67, $2E, $D7   ; was $A81E  aux=$67CE main=$D72E
+    .byte 4, 15, $CE, $67, $3E, $D7   ; was $A81E  aux=$67CE main=$D73E
 dhgrSprite_040:
-    .byte 4, 13, $0A, $68, $6A, $D7   ; was $A85C  aux=$680A main=$D76A
+    .byte 4, 13, $0A, $68, $7A, $D7   ; was $A85C  aux=$680A main=$D77A
 dhgrSprite_041:
-    .byte 4, 12, $3E, $68, $9E, $D7   ; was $A892  aux=$683E main=$D79E
+    .byte 4, 12, $3E, $68, $AE, $D7   ; was $A892  aux=$683E main=$D7AE
 dhgrSprite_042:
-    .byte 3, 11, $6E, $68, $CE, $D7   ; was $A8C4  aux=$686E main=$D7CE
+    .byte 3, 11, $6E, $68, $DE, $D7   ; was $A8C4  aux=$686E main=$D7DE
 dhgrSprite_043:
-    .byte 2, 9, $8F, $68, $EF, $D7   ; was $A8E7  aux=$688F main=$D7EF
+    .byte 2, 9, $8F, $68, $FF, $D7   ; was $A8E7  aux=$688F main=$D7FF
 dhgrSprite_044:
-    .byte 5, 18, $A1, $68, $01, $D8   ; was $A8FB  aux=$68A1 main=$D801
+    .byte 5, 18, $A1, $68, $11, $D8   ; was $A8FB  aux=$68A1 main=$D811
 dhgrSprite_045:
-    .byte 4, 15, $FB, $68, $5B, $D8   ; was $A957  aux=$68FB main=$D85B
+    .byte 4, 15, $FB, $68, $6B, $D8   ; was $A957  aux=$68FB main=$D86B
 dhgrSprite_046:
-    .byte 4, 13, $37, $69, $97, $D8   ; was $A995  aux=$6937 main=$D897
+    .byte 4, 13, $37, $69, $A7, $D8   ; was $A995  aux=$6937 main=$D8A7
 dhgrSprite_047:
-    .byte 4, 13, $6B, $69, $CB, $D8   ; was $A9CB  aux=$696B main=$D8CB
+    .byte 4, 13, $6B, $69, $DB, $D8   ; was $A9CB  aux=$696B main=$D8DB
 dhgrSprite_048:
-    .byte 3, 11, $9F, $69, $FF, $D8   ; was $AA01  aux=$699F main=$D8FF
+    .byte 3, 11, $9F, $69, $0F, $D9   ; was $AA01  aux=$699F main=$D90F
 dhgrSprite_049:
-    .byte 2, 9, $C0, $69, $20, $D9   ; was $AA24  aux=$69C0 main=$D920
+    .byte 2, 9, $C0, $69, $30, $D9   ; was $AA24  aux=$69C0 main=$D930
 dhgrSprite_050:
-    .byte 2, 3, $D2, $69, $32, $D9   ; was $AA38  aux=$69D2 main=$D932
+    .byte 2, 3, $D2, $69, $42, $D9   ; was $AA38  aux=$69D2 main=$D942
 dhgrSprite_051:
-    .byte 4, 6, $D8, $69, $38, $D9   ; was $AA40  aux=$69D8 main=$D938
+    .byte 4, 6, $D8, $69, $48, $D9   ; was $AA40  aux=$69D8 main=$D948
 dhgrSprite_052:
-    .byte 4, 6, $F0, $69, $50, $D9   ; was $AA5A  aux=$69F0 main=$D950
+    .byte 4, 6, $F0, $69, $60, $D9   ; was $AA5A  aux=$69F0 main=$D960
 dhgrSprite_053:
-    .byte 1, 5, $08, $6A, $68, $D9   ; was $AA74  aux=$6A08 main=$D968
+    .byte 1, 5, $08, $6A, $78, $D9   ; was $AA74  aux=$6A08 main=$D978
 dhgrSprite_054:
-    .byte 1, 4, $0D, $6A, $6D, $D9   ; was $AA7B  aux=$6A0D main=$D96D
+    .byte 1, 4, $0D, $6A, $7D, $D9   ; was $AA7B  aux=$6A0D main=$D97D
 dhgrSprite_055:
-    .byte 1, 4, $11, $6A, $71, $D9   ; was $AA81  aux=$6A11 main=$D971
+    .byte 1, 4, $11, $6A, $81, $D9   ; was $AA81  aux=$6A11 main=$D981
 dhgrSprite_056:
-    .byte 1, 4, $15, $6A, $75, $D9   ; was $AA87  aux=$6A15 main=$D975
+    .byte 1, 4, $15, $6A, $85, $D9   ; was $AA87  aux=$6A15 main=$D985
 dhgrSprite_057:
-    .byte 1, 5, $19, $6A, $79, $D9   ; was $AA8D  aux=$6A19 main=$D979
+    .byte 1, 5, $19, $6A, $89, $D9   ; was $AA8D  aux=$6A19 main=$D989
 dhgrSprite_058:
-    .byte 1, 3, $1E, $6A, $7E, $D9   ; was $AA94  aux=$6A1E main=$D97E
+    .byte 1, 3, $1E, $6A, $8E, $D9   ; was $AA94  aux=$6A1E main=$D98E
 dhgrSprite_059:
-    .byte 1, 3, $21, $6A, $81, $D9   ; was $AA99  aux=$6A21 main=$D981
+    .byte 1, 3, $21, $6A, $91, $D9   ; was $AA99  aux=$6A21 main=$D991
 dhgrSprite_060:
-    .byte 2, 3, $24, $6A, $84, $D9   ; was $AA9E  aux=$6A24 main=$D984
+    .byte 2, 3, $24, $6A, $94, $D9   ; was $AA9E  aux=$6A24 main=$D994
 dhgrSprite_061:
-    .byte 1, 1, $2A, $6A, $8A, $D9   ; was $AAA6  aux=$6A2A main=$D98A
+    .byte 1, 1, $2A, $6A, $9A, $D9   ; was $AAA6  aux=$6A2A main=$D99A
 dhgrSprite_062:
-    .byte 1, 4, $2B, $6A, $8B, $D9   ; was $AAA9  aux=$6A2B main=$D98B
+    .byte 1, 4, $2B, $6A, $9B, $D9   ; was $AAA9  aux=$6A2B main=$D99B
 dhgrSprite_063:
-    .byte 2, 10, $2F, $6A, $8F, $D9   ; was $AAAF  aux=$6A2F main=$D98F
+    .byte 2, 10, $2F, $6A, $9F, $D9   ; was $AAAF  aux=$6A2F main=$D99F
 dhgrSprite_064:
-    .byte 2, 2, $43, $6A, $A3, $D9   ; was $AAC5  aux=$6A43 main=$D9A3
+    .byte 2, 2, $43, $6A, $B3, $D9   ; was $AAC5  aux=$6A43 main=$D9B3
 dhgrSprite_065:
-    .byte 2, 2, $47, $6A, $A7, $D9   ; was $AACB  aux=$6A47 main=$D9A7
+    .byte 2, 2, $47, $6A, $B7, $D9   ; was $AACB  aux=$6A47 main=$D9B7
 dhgrSprite_066:
-    .byte 2, 2, $4B, $6A, $AB, $D9   ; was $AAD1  aux=$6A4B main=$D9AB
+    .byte 2, 2, $4B, $6A, $BB, $D9   ; was $AAD1  aux=$6A4B main=$D9BB
 dhgrSprite_067:
-    .byte 3, 9, $4F, $6A, $AF, $D9   ; was $AAD7  aux=$6A4F main=$D9AF
+    .byte 3, 9, $4F, $6A, $BF, $D9   ; was $AAD7  aux=$6A4F main=$D9BF
 dhgrSprite_068:
-    .byte 3, 11, $6A, $6A, $CA, $D9   ; was $AAF4  aux=$6A6A main=$D9CA
+    .byte 3, 11, $6A, $6A, $DA, $D9   ; was $AAF4  aux=$6A6A main=$D9DA
 dhgrSprite_069:
-    .byte 3, 12, $8B, $6A, $EB, $D9   ; was $AB17  aux=$6A8B main=$D9EB
+    .byte 3, 12, $8B, $6A, $FB, $D9   ; was $AB17  aux=$6A8B main=$D9FB
 dhgrSprite_070:
-    .byte 3, 12, $AF, $6A, $0F, $DA   ; was $AB3D  aux=$6AAF main=$DA0F
+    .byte 3, 12, $AF, $6A, $1F, $DA   ; was $AB3D  aux=$6AAF main=$DA1F
 dhgrSprite_071:
-    .byte 3, 8, $D3, $6A, $33, $DA   ; was $AB63  aux=$6AD3 main=$DA33
+    .byte 3, 8, $D3, $6A, $43, $DA   ; was $AB63  aux=$6AD3 main=$DA43
 dhgrSprite_072:
-    .byte 1, 8, $EB, $6A, $4B, $DA   ; was $AB7D  aux=$6AEB main=$DA4B
+    .byte 1, 8, $EB, $6A, $5B, $DA   ; was $AB7D  aux=$6AEB main=$DA5B
 dhgrSprite_073:
-    .byte 2, 11, $F3, $6A, $53, $DA   ; was $AB87  aux=$6AF3 main=$DA53
+    .byte 2, 11, $F3, $6A, $63, $DA   ; was $AB87  aux=$6AF3 main=$DA63
 dhgrSprite_074:
-    .byte 2, 11, $09, $6B, $69, $DA   ; was $AB9F  aux=$6B09 main=$DA69
+    .byte 2, 11, $09, $6B, $79, $DA   ; was $AB9F  aux=$6B09 main=$DA79
 dhgrSprite_075:
-    .byte 2, 11, $1F, $6B, $7F, $DA   ; was $ABB7  aux=$6B1F main=$DA7F
+    .byte 2, 11, $1F, $6B, $8F, $DA   ; was $ABB7  aux=$6B1F main=$DA8F
 dhgrSprite_076:
-    .byte 2, 11, $35, $6B, $95, $DA   ; was $ABCF  aux=$6B35 main=$DA95
+    .byte 2, 11, $35, $6B, $A5, $DA   ; was $ABCF  aux=$6B35 main=$DAA5
 dhgrSprite_077:
-    .byte 2, 11, $4B, $6B, $AB, $DA   ; was $ABE7  aux=$6B4B main=$DAAB
+    .byte 2, 11, $4B, $6B, $BB, $DA   ; was $ABE7  aux=$6B4B main=$DABB
 dhgrSprite_078:
-    .byte 2, 11, $61, $6B, $C1, $DA   ; was $ABFF  aux=$6B61 main=$DAC1
+    .byte 2, 11, $61, $6B, $D1, $DA   ; was $ABFF  aux=$6B61 main=$DAD1
 dhgrSprite_079:
-    .byte 2, 11, $77, $6B, $D7, $DA   ; was $AC17  aux=$6B77 main=$DAD7
+    .byte 2, 11, $77, $6B, $E7, $DA   ; was $AC17  aux=$6B77 main=$DAE7
 dhgrSprite_080:
-    .byte 2, 11, $8D, $6B, $ED, $DA   ; was $AC2F  aux=$6B8D main=$DAED
+    .byte 2, 11, $8D, $6B, $FD, $DA   ; was $AC2F  aux=$6B8D main=$DAFD
 dhgrSprite_081:
-    .byte 2, 11, $A3, $6B, $03, $DB   ; was $AC47  aux=$6BA3 main=$DB03
+    .byte 2, 11, $A3, $6B, $13, $DB   ; was $AC47  aux=$6BA3 main=$DB13
 dhgrSprite_082:
-    .byte 2, 11, $B9, $6B, $19, $DB   ; was $AC5F  aux=$6BB9 main=$DB19
+    .byte 2, 11, $B9, $6B, $29, $DB   ; was $AC5F  aux=$6BB9 main=$DB29
 dhgrSprite_083:
-    .byte 6, 4, $CF, $6B, $2F, $DB   ; was $AC77  aux=$6BCF main=$DB2F
+    .byte 6, 4, $CF, $6B, $3F, $DB   ; was $AC77  aux=$6BCF main=$DB3F
 dhgrSprite_084:
-    .byte 5, 4, $E7, $6B, $47, $DB   ; was $AD59  aux=$6BE7 main=$DB47
+    .byte 5, 4, $E7, $6B, $57, $DB   ; was $AD59  aux=$6BE7 main=$DB57
 dhgrSprite_085:
-    .byte 7, 4, $FB, $6B, $5B, $DB   ; was $AE1F  aux=$6BFB main=$DB5B
+    .byte 7, 4, $FB, $6B, $6B, $DB   ; was $AE1F  aux=$6BFB main=$DB6B
 dhgrSprite_086:
-    .byte 7, 4, $17, $6C, $77, $DB   ; was $AF1D  aux=$6C17 main=$DB77
+    .byte 7, 4, $17, $6C, $87, $DB   ; was $AF1D  aux=$6C17 main=$DB87
 dhgrSprite_087:
-    .byte 1, 23, $33, $6C, $93, $DB   ; was $B01B  aux=$6C33 main=$DB93
+    .byte 1, 23, $33, $6C, $A3, $DB   ; was $B01B  aux=$6C33 main=$DBA3
 dhgrSprite_088:
-    .byte 3, 8, $4A, $6C, $AA, $DB   ; was $B034  aux=$6C4A main=$DBAA
+    .byte 3, 8, $4A, $6C, $BA, $DB   ; was $B034  aux=$6C4A main=$DBBA
 dhgrSprite_089:
-    .byte 7, 12, $62, $6C, $C2, $DB   ; was $B04E  aux=$6C62 main=$DBC2
+    .byte 7, 12, $62, $6C, $D2, $DB   ; was $B04E  aux=$6C62 main=$DBD2
 dhgrSprite_090:
-    .byte 2, 5, $B6, $6C, $16, $DC   ; was $B344  aux=$6CB6 main=$DC16
+    .byte 2, 5, $B6, $6C, $26, $DC   ; was $B344  aux=$6CB6 main=$DC26
 dhgrSprite_091:
-    .byte 1, 12, $C0, $6C, $20, $DC   ; was $B350  aux=$6CC0 main=$DC20
+    .byte 1, 12, $C0, $6C, $30, $DC   ; was $B350  aux=$6CC0 main=$DC30
 dhgrSprite_092:
-    .byte 2, 8, $CC, $6C, $2C, $DC   ; was $B35E  aux=$6CCC main=$DC2C
+    .byte 2, 8, $CC, $6C, $3C, $DC   ; was $B35E  aux=$6CCC main=$DC3C
 dhgrSprite_093:
-    .byte 2, 8, $DC, $6C, $3C, $DC   ; was $B370  aux=$6CDC main=$DC3C
+    .byte 2, 8, $DC, $6C, $4C, $DC   ; was $B370  aux=$6CDC main=$DC4C
 dhgrSprite_094:
-    .byte 2, 3, $EC, $6C, $4C, $DC   ; was $B382  aux=$6CEC main=$DC4C
+    .byte 2, 3, $EC, $6C, $5C, $DC   ; was $B382  aux=$6CEC main=$DC5C
 dhgrSprite_095:
-    .byte 2, 3, $F2, $6C, $52, $DC   ; was $B38A  aux=$6CF2 main=$DC52
+    .byte 2, 3, $F2, $6C, $62, $DC   ; was $B38A  aux=$6CF2 main=$DC62
 dhgrSprite_096:
-    .byte 1, 5, $F8, $6C, $58, $DC   ; was $B392  aux=$6CF8 main=$DC58
+    .byte 1, 5, $F8, $6C, $68, $DC   ; was $B392  aux=$6CF8 main=$DC68
 dhgrSprite_097:
-    .byte 2, 6, $FD, $6C, $5D, $DC   ; was $B399  aux=$6CFD main=$DC5D
+    .byte 2, 6, $FD, $6C, $6D, $DC   ; was $B399  aux=$6CFD main=$DC6D
 dhgrSprite_098:
-    .byte 2, 7, $09, $6D, $69, $DC   ; was $B3A7  aux=$6D09 main=$DC69
+    .byte 2, 7, $09, $6D, $79, $DC   ; was $B3A7  aux=$6D09 main=$DC79
 dhgrSprite_099:
-    .byte 3, 9, $17, $6D, $77, $DC   ; was $B3B7  aux=$6D17 main=$DC77
+    .byte 3, 9, $17, $6D, $87, $DC   ; was $B3B7  aux=$6D17 main=$DC87
 dhgrSprite_100:
-    .byte 3, 11, $32, $6D, $92, $DC   ; was $B3D4  aux=$6D32 main=$DC92
+    .byte 3, 11, $32, $6D, $A2, $DC   ; was $B3D4  aux=$6D32 main=$DCA2
 dhgrSprite_101:
-    .byte 4, 11, $53, $6D, $B3, $DC   ; was $B3F7  aux=$6D53 main=$DCB3
+    .byte 4, 11, $53, $6D, $C3, $DC   ; was $B3F7  aux=$6D53 main=$DCC3
 dhgrSprite_102:
-    .byte 4, 11, $7F, $6D, $DF, $DC   ; was $B57A  aux=$6D7F main=$DCDF
+    .byte 4, 11, $7F, $6D, $EF, $DC   ; was $B57A  aux=$6D7F main=$DCEF
 dhgrSprite_103:
-    .byte 4, 2, $AB, $6D, $0B, $DD   ; was $B6FD  aux=$6DAB main=$DD0B
+    .byte 4, 2, $AB, $6D, $1B, $DD   ; was $B6FD  aux=$6DAB main=$DD1B
 dhgrSprite_104:
-    .byte 2, 2, $B3, $6D, $13, $DD   ; was $B707  aux=$6DB3 main=$DD13
+    .byte 2, 2, $B3, $6D, $23, $DD   ; was $B707  aux=$6DB3 main=$DD23
 dhgrSprite_105:
-    .byte 2, 5, $B7, $6D, $17, $DD   ; was $B70D  aux=$6DB7 main=$DD17
+    .byte 2, 5, $B7, $6D, $27, $DD   ; was $B70D  aux=$6DB7 main=$DD27
 dhgrSprite_106:
-    .byte 2, 5, $C1, $6D, $21, $DD   ; was $B719  aux=$6DC1 main=$DD21
+    .byte 2, 5, $C1, $6D, $31, $DD   ; was $B719  aux=$6DC1 main=$DD31
 dhgrSprite_107:
-    .byte 1, 7, $CB, $6D, $2B, $DD   ; was $B725  aux=$6DCB main=$DD2B
+    .byte 1, 7, $CB, $6D, $3B, $DD   ; was $B725  aux=$6DCB main=$DD3B
 dhgrSprite_108:
-    .byte 1, 7, $D2, $6D, $32, $DD   ; was $B72E  aux=$6DD2 main=$DD32
+    .byte 1, 7, $D2, $6D, $42, $DD   ; was $B72E  aux=$6DD2 main=$DD42
 dhgrSprite_109:
-    .byte 1, 7, $D9, $6D, $39, $DD   ; was $B737  aux=$6DD9 main=$DD39
+    .byte 1, 7, $D9, $6D, $49, $DD   ; was $B737  aux=$6DD9 main=$DD49
 dhgrSprite_110:
-    .byte 1, 7, $E0, $6D, $40, $DD   ; was $B740  aux=$6DE0 main=$DD40
+    .byte 1, 7, $E0, $6D, $50, $DD   ; was $B740  aux=$6DE0 main=$DD50
 dhgrSprite_111:
-    .byte 1, 7, $E7, $6D, $47, $DD   ; was $B749  aux=$6DE7 main=$DD47
+    .byte 1, 7, $E7, $6D, $57, $DD   ; was $B749  aux=$6DE7 main=$DD57
 dhgrSprite_112:
-    .byte 1, 7, $EE, $6D, $4E, $DD   ; was $B752  aux=$6DEE main=$DD4E
+    .byte 1, 7, $EE, $6D, $5E, $DD   ; was $B752  aux=$6DEE main=$DD5E
 dhgrSprite_113:
-    .byte 1, 7, $F5, $6D, $55, $DD   ; was $B75B  aux=$6DF5 main=$DD55
+    .byte 1, 7, $F5, $6D, $65, $DD   ; was $B75B  aux=$6DF5 main=$DD65
 dhgrSprite_114:
-    .byte 1, 7, $FC, $6D, $5C, $DD   ; was $B764  aux=$6DFC main=$DD5C
+    .byte 1, 7, $FC, $6D, $6C, $DD   ; was $B764  aux=$6DFC main=$DD6C
 dhgrSprite_115:
-    .byte 1, 7, $03, $6E, $63, $DD   ; was $B76D  aux=$6E03 main=$DD63
+    .byte 1, 7, $03, $6E, $73, $DD   ; was $B76D  aux=$6E03 main=$DD73
 dhgrSprite_116:
-    .byte 1, 7, $0A, $6E, $6A, $DD   ; was $B776  aux=$6E0A main=$DD6A
+    .byte 1, 7, $0A, $6E, $7A, $DD   ; was $B776  aux=$6E0A main=$DD7A
 dhgrSprite_117:
-    .byte 2, 7, $11, $6E, $71, $DD   ; was $B77F  aux=$6E11 main=$DD71
+    .byte 2, 7, $11, $6E, $81, $DD   ; was $B77F  aux=$6E11 main=$DD81
 dhgrSprite_118:
-    .byte 6, 9, $1F, $6E, $7F, $DD   ; was $B78F  aux=$6E1F main=$DD7F
+    .byte 6, 9, $1F, $6E, $8F, $DD   ; was $B78F  aux=$6E1F main=$DD8F
 dhgrSprite_119:
-    .byte 14, 27, $55, $6E, $B5, $DD   ; was $B7C7  aux=$6E55 main=$DDB5
+    .byte 14, 27, $55, $6E, $C5, $DD   ; was $B7C7  aux=$6E55 main=$DDC5
 dhgrSprite_120:
-    .byte 23, 13, $CF, $6F, $2F, $DF   ; was $B943  aux=$6FCF main=$DF2F
+    .byte 23, 13, $CF, $6F, $3F, $DF   ; was $B943  aux=$6FCF main=$DF3F
 dhgrSprite_121:
-    .byte 28, 11, $FA, $70, $5A, $E0   ; was $BA70  aux=$70FA main=$E05A
+    .byte 28, 11, $FA, $70, $6A, $E0   ; was $BA70  aux=$70FA main=$E06A
 dhgrSprite_122:
-    .byte 13, 17, $2E, $72, $8E, $E1   ; was $BBA6  aux=$722E main=$E18E
+    .byte 13, 17, $2E, $72, $9E, $E1   ; was $BBA6  aux=$722E main=$E19E
 dhgrSprite_123:
-    .byte 5, 21, $0B, $73, $6B, $E2   ; was $BC85  aux=$730B main=$E26B
+    .byte 5, 21, $0B, $73, $7B, $E2   ; was $BC85  aux=$730B main=$E27B
 dhgrSprite_124:
-    .byte 5, 21, $74, $73, $D4, $E2   ; was $BCF0  aux=$7374 main=$E2D4
+    .byte 5, 21, $74, $73, $E4, $E2   ; was $BCF0  aux=$7374 main=$E2E4
 dhgrSprite_125:
-    .byte 11, 15, $DD, $73, $3D, $E3   ; was $BD5B  aux=$73DD main=$E33D
+    .byte 11, 15, $DD, $73, $4D, $E3   ; was $BD5B  aux=$73DD main=$E34D
 dhgrSprite_126:
-    .byte 12, 15, $82, $74, $E2, $E3   ; was $BE02  aux=$7482 main=$E3E2
+    .byte 12, 15, $82, $74, $F2, $E3   ; was $BE02  aux=$7482 main=$E3F2
 dhgrSprite_127:
-    .byte 11, 15, $36, $75, $96, $E4   ; was $BEB8  aux=$7536 main=$E496
+    .byte 11, 15, $36, $75, $A6, $E4   ; was $BEB8  aux=$7536 main=$E4A6
 
 ; Address equates for pointer table (6 bytes per header):
 dhgrSpriteAddr_000 = $AB1C + 0 * 6
